@@ -400,11 +400,11 @@ def main():
     weight_decay = args.weight_decay
 
     # Placeholders
-    gt_holder = tf.placeholder(dtype=tf.float32, shape=[batch_size, image_size, image_size, 31])
-    ms_holder = tf.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 8, image_size // 8, 31])
-    pan_holder = tf.placeholder(dtype=tf.float32, shape=[batch_size, image_size, image_size, 3])
-    pan2_holder = tf.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 2, image_size // 2, 3])
-    pan4_holder = tf.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 4, image_size // 4, 3])
+    gt_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size, image_size, 31])
+    ms_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 8, image_size // 8, 31])
+    pan_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size, image_size, 3])
+    pan2_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 2, image_size // 2, 3])
+    pan4_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 4, image_size // 4, 3])
 
     # If "data" is a directory, auto-convert mats to a test TFRecord first
     data_path = args.data
@@ -427,7 +427,7 @@ def main():
     mse = tf.reshape(mse, [image_size, image_size, 31])
     final_mse = tf.reduce_mean(mse, axis=[0, 1])
 
-    config = tf.ConfigProto()
+    config = tf.compat.v1.ConfigProto()
     config.gpu_options.allow_growth = True
 
     init = tf.compat.v1.global_variables_initializer()
@@ -448,8 +448,8 @@ def main():
         threads = tf.compat.v1.train.start_queue_runners(coord=coord)
 
         # Restore checkpoint
-        if tf.train.get_checkpoint_state(args.model_dir):
-            ckpt = tf.train.latest_checkpoint(args.model_dir)
+        if tf.compat.v1.train.get_checkpoint_state(args.model_dir):
+            ckpt = tf.compat.v1.train.latest_checkpoint(args.model_dir)
             saver.restore(sess, ckpt)
             print('Loaded checkpoint:', ckpt)
         else:
