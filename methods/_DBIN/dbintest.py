@@ -289,7 +289,7 @@ def _vsi():
 
 
 def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
-    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         return tf.compat.v1.layers.conv2d(
             inputs=x,
             filters=num_outputs,
@@ -304,7 +304,7 @@ def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_de
 
 
 def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
-    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         return tf.compat.v1.layers.conv2d_transpose(
             inputs=x,
             filters=num_outputs,
@@ -319,9 +319,9 @@ def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope,
 
 
 def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
-    with tf.variable_scope('py'):
+    with tf.compat.v1.variable_scope('py'):
         if reuse:
-            tf.get_variable_scope().reuse_variables()
+            tf.compat.v1.get_variable_scope().reuse_variables()
 
         lms = _conv2d_transpose(Y, num_outputs=num_spectral, kernel_size=12, stride=8,
                                 activation_fn=None, scope='lms', weight_decay=weight_decay)
@@ -344,9 +344,9 @@ def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
 
 
 def boost_lap(X, Z_in, Y_in, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
-    with tf.variable_scope('recursive'):
+    with tf.compat.v1.variable_scope('recursive'):
         if reuse:
-            tf.get_variable_scope().reuse_variables()
+            tf.compat.v1.get_variable_scope().reuse_variables()
 
         Z = _conv2d(X, num_outputs=3, kernel_size=3, stride=1,
                     activation_fn=tf.nn.leaky_relu, scope='dz', weight_decay=weight_decay)
@@ -363,9 +363,9 @@ def boost_lap(X, Z_in, Y_in, num_spectral=31, num_fm=128, reuse=True, weight_dec
 
 
 def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight_decay=2e-5):
-    with tf.variable_scope('fusion_net'):
+    with tf.compat.v1.variable_scope('fusion_net'):
         if reuse:
-            tf.get_variable_scope().reuse_variables()
+            tf.compat.v1.get_variable_scope().reuse_variables()
 
         X = Fusion(Z, Y, num_spectral=num_spectral, num_fm=num_fm, reuse=False, weight_decay=weight_decay)
         Xs = X
