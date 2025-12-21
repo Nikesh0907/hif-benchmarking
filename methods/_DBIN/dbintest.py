@@ -381,7 +381,7 @@ def boost_lap(X, Z_in, Y_in, num_spectral=31, num_fm=128, reuse=True, weight_dec
         return X
 
 
-def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight_decay=2e-5):
+def fusion_net(Z, Y, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_decay=1e-5):
     with tf.compat.v1.variable_scope('fusion_net'):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
@@ -409,7 +409,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--image_size', type=int, default=512)
     parser.add_argument('--num_images', type=int, default=12, help='Number of test samples to evaluate')
-    parser.add_argument('--weight_decay', type=float, default=2e-5)
+    parser.add_argument('--weight_decay', type=float, default=1e-5)
     args = parser.parse_args()
 
     # Enable TF1 behavior under TF2 runtimes
@@ -443,7 +443,7 @@ def main():
     pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch = read_and_decode_test(data_path, batch_size=batch_size)
 
     # Build model
-    X = fusion_net(pan_holder, ms_holder, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight_decay=weight_decay)
+    X = fusion_net(pan_holder, ms_holder, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_decay=weight_decay)
     output = tf.clip_by_value(X, 0.0, 1.0)
 
     mse = tf.square(output - gt_holder)
@@ -470,57 +470,35 @@ def main():
         coord = tf.compat.v1.train.Coordinator()
         threads = tf.compat.v1.train.start_queue_runners(coord=coord)
 
-        # Restore checkpoint with smart fallback name remapping if needed
+        # Restore checkpoint using exact-name intersection with checkpoint
         if tf.compat.v1.train.get_checkpoint_state(args.model_dir):
             ckpt = tf.compat.v1.train.latest_checkpoint(args.model_dir)
             try:
                 saver.restore(sess, ckpt)
                 print('Loaded checkpoint:', ckpt)
             except Exception as e:
-                print('Standard restore failed, attempting smart remap:', str(e))
-                # Build mapping from checkpoint names to current graph variables
+                print('Standard restore failed; performing exact-name restore:', str(e))
                 reader = tf.compat.v1.train.NewCheckpointReader(ckpt)
                 ckpt_vars = set(reader.get_variable_to_shape_map().keys())
                 graph_vars = tf.compat.v1.trainable_variables()
-                remap = {}
+                exact_map = {}
+                skipped = []
                 for v in graph_vars:
                     name = v.name.split(':')[0]
-                    # Direct match
                     if name in ckpt_vars:
-                        remap[name] = v
-                        continue
-                    # Try common alternatives for final fusion conv
-                    trial_names = [
-                        name,
-                        name.replace('/Conv/', '/Conv_1/'),
-                        name.replace('/Conv/', '/conv2d/'),
-                        name.replace('/Conv/', '/conv2d_1/'),
-                        name.replace('/Conv/', '/out/'),
-                        name.replace('/py/', '/'),
-                    ]
-                    matched = False
-                    for t in trial_names:
-                        if t in ckpt_vars:
-                            remap[t] = v
-                            matched = True
-                            break
-                    if not matched:
-                        # As last resort, look for same tail (e.g., 'weights'/'biases') within fusion_net scope
-                        tail = name.split('/')[-2:]  # e.g., ['Conv', 'weights']
-                        for cv in ckpt_vars:
-                            if cv.endswith('/'.join(tail)) and ('fusion_net/' in cv or 'recursive/' in cv or 'py/' in cv):
-                                remap[cv] = v
-                                matched = True
-                                break
-                    if not matched:
-                        print('No checkpoint match for var:', name)
-                if remap:
-                    print('Remapping and restoring {} variables...'.format(len(remap)))
-                    saver_remap = tf.compat.v1.train.Saver(var_list=remap)
-                    saver_remap.restore(sess, ckpt)
-                    print('Loaded checkpoint with remapped names:', ckpt)
+                        exact_map[name] = v
+                    else:
+                        skipped.append(name)
+                print('Will restore {} vars from checkpoint; skipping {} (not present).'.format(len(exact_map), len(skipped)))
+                if skipped:
+                    # Print a few for visibility
+                    print('Skipped examples:', skipped[:10])
+                if exact_map:
+                    saver_exact = tf.compat.v1.train.Saver(var_list=exact_map)
+                    saver_exact.restore(sess, ckpt)
+                    print('Loaded checkpoint with exact-name restore:', ckpt)
                 else:
-                    raise RuntimeError('Failed to map any variables from checkpoint {} to current graph'.format(ckpt))
+                    raise RuntimeError('No overlapping variables between graph and checkpoint {}.'.format(ckpt))
         else:
             raise RuntimeError('No checkpoint found in {}'.format(args.model_dir))
 
