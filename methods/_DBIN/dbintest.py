@@ -252,7 +252,8 @@ def compute_ms_ssim(image1, image2):
     n = image1.shape[2]
     ms_ssim = 0.0
     for i in range(n):
-        single_ssim = compare_ssim(image1[:, :, i], image2[:, :, i])
+        # For float images, specify data_range; outputs are clipped to [0,1]
+        single_ssim = compare_ssim(image1[:, :, i], image2[:, :, i], data_range=1.0)
         ms_ssim += single_ssim
     return ms_ssim / n
 
