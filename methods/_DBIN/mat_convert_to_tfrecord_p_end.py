@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Created on Wed Sep 26 14:12:13 2018
@@ -7,14 +7,22 @@ Created on Wed Sep 26 14:12:13 2018
 """
 
 
-import tensorflow as tf
+try:
+    import tensorflow as _tf
+    if _tf.__version__.startswith('2'):
+        import tensorflow.compat.v1 as tf
+        tf.disable_v2_behavior()
+    else:
+        tf = _tf
+except Exception:
+    import tensorflow as tf
 import numpy as np
 import os
 import matplotlib.pyplot as plt
 import scipy.io as sio
 import os
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '3')
 
 def int64_feature(value):
   """Wrapper for inserting int64 features into Example proto."""

@@ -25,7 +25,6 @@ import numpy as np
 import scipy.io as sio
 
 import tensorflow as tf
-import tensorflow.contrib.layers as ly
 import cv2
 try:
     from skimage.measure import compare_ssim
@@ -66,169 +65,169 @@ def _find_candidate_key(mdict, want_channels):
     return best
 
 def _load_mat(path, key, want_channels=None, allow_autodetect=False):
-    def convert_mats_to_test_tfrecord(mat_dir, save_path):
-        """
-        Create a test-style TFRecord with features expected by read_and_decode_test:
-          pan_raw [512,512,3], pan2_raw [256,256,3], pan4_raw [128,128,3],
-          gt_raw [512,512,31], ms_raw [64,64,31], ms2_raw [128,128,31].
+    m = sio.loadmat(path)
+    if key in m:
+        return np.array(m[key], dtype=np.float32)
+    if allow_autodetect:
+        cand = _find_candidate_key(m, want_channels or 1)
+        if cand is not None:
+            return np.array(m[cand], dtype=np.float32)
+    raise KeyError('Key {} not found in {}. Available: {}'.format(key, path, list(m.keys())))
 
-        Supports two modes:
-         1) Dataset-packed mats (gt.mat/ms.mat/pan.mat containing N samples)
-         2) A directory of per-scene mats (e.g., jelly_beans.mat with key 'hsi', optional 'msi')
 
-        Missing derived variants are generated via bilinear resize. If 'msi' is absent,
-        a 3-channel proxy is synthesized from 'hsi' bands.
-        """
-        _ensure_dir(os.path.dirname(save_path))
+def convert_mats_to_test_tfrecord(mat_dir, save_path):
+    """
+    Create a test-style TFRecord with features expected by read_and_decode_test:
+      pan_raw [512,512,3], pan2_raw [256,256,3], pan4_raw [128,128,3],
+      gt_raw [512,512,31], ms_raw [64,64,31], ms2_raw [128,128,31].
 
-        def ensure_4d(x):
-            if x.ndim == 3:
-                x = x[np.newaxis, ...]
-            return x.astype(np.float32)
+    Supports two modes:
+     1) Dataset-packed mats (gt.mat/ms.mat/pan.mat containing N samples)
+     2) A directory of per-scene mats (e.g., jelly_beans.mat with key 'hsi', optional 'msi')
 
-        def resize_hw(arr, new_hw):
-            # arr: [H,W,C] or [N,H,W,C]; returns same rank resized to new_hw
-            if arr.ndim == 3:
-                return cv2.resize(arr, new_hw, interpolation=cv2.INTER_LINEAR).astype(np.float32)
-            out = []
-            for i in range(arr.shape[0]):
-                out.append(cv2.resize(arr[i], new_hw, interpolation=cv2.INTER_LINEAR))
-            return np.stack(out, axis=0).astype(np.float32)
+    Missing derived variants are generated via bilinear resize. If 'msi' is absent,
+    a 3-channel proxy is synthesized from 'hsi' bands.
+    """
+    _ensure_dir(os.path.dirname(save_path))
 
-        gt_path = os.path.join(mat_dir, 'gt.mat')
-        ms_path = os.path.join(mat_dir, 'ms.mat')
-        pan_path = os.path.join(mat_dir, 'pan.mat')
+    def ensure_4d(x):
+        if x.ndim == 3:
+            x = x[np.newaxis, ...]
+        return x.astype(np.float32)
 
+    def resize_hw(arr, new_hw):
+        # arr: [H,W,C] or [N,H,W,C]; returns same rank resized to new_hw
+        if arr.ndim == 3:
+            return cv2.resize(arr, new_hw, interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        out = []
+        for i in range(arr.shape[0]):
+            out.append(cv2.resize(arr[i], new_hw, interpolation=cv2.INTER_LINEAR))
+        return np.stack(out, axis=0).astype(np.float32)
+
+    gt_path = os.path.join(mat_dir, 'gt.mat')
+    ms_path = os.path.join(mat_dir, 'ms.mat')
+    pan_path = os.path.join(mat_dir, 'pan.mat')
+
+    # Open TFRecord writer with TF2/TF1 compatibility
+    try:
+        writer = tf.io.TFRecordWriter(save_path)
+    except Exception:
         writer = tf.python_io.TFRecordWriter(save_path)
 
-        if os.path.isfile(gt_path):
-            # Mode 1: dataset-packed mats
-            gt = _load_mat(gt_path, 'gt', want_channels=31, allow_autodetect=True)
-            ms = _load_mat(ms_path, 'ms', want_channels=31, allow_autodetect=True) if os.path.isfile(ms_path) else None
-            pan = _load_mat(pan_path, 'pan', want_channels=3, allow_autodetect=True) if os.path.isfile(pan_path) else None
+    if os.path.isfile(gt_path):
+        # Mode 1: dataset-packed mats
+        gt = _load_mat(gt_path, 'gt', want_channels=31, allow_autodetect=True)
+        ms = _load_mat(ms_path, 'ms', want_channels=31, allow_autodetect=True) if os.path.isfile(ms_path) else None
+        pan = _load_mat(pan_path, 'pan', want_channels=3, allow_autodetect=True) if os.path.isfile(pan_path) else None
 
-            gt = ensure_4d(gt)
-            ms = ensure_4d(ms) if ms is not None else None
-            if pan is None:
-                # synthesize RGB from gt bands
-                idx_b, idx_g, idx_r = 7, 15, 23
-                pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
-            pan = ensure_4d(pan)
+        gt = ensure_4d(gt)
+        ms = ensure_4d(ms) if ms is not None else None
+        if pan is None:
+            # synthesize RGB from gt bands
+            idx_b, idx_g, idx_r = 7, 15, 23
+            pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
+        pan = ensure_4d(pan)
 
-            N = gt.shape[0]
-            for i in range(N):
-                H, W = gt.shape[1], gt.shape[2]
-                # derive downsamples
-                pan2 = resize_hw(pan[i], (W // 2, H // 2))
-                pan4 = resize_hw(pan[i], (W // 4, H // 4))
-                gt_full = gt[i]
-                gt2 = resize_hw(gt_full, (W // 2, H // 2))
-                gt4 = resize_hw(gt_full, (W // 4, H // 4))
-                ms_i = ms[i] if ms is not None else resize_hw(gt_full, (64, 64))
-                ms2 = resize_hw(ms_i, (128, 128))
+        N = gt.shape[0]
+        for i in range(N):
+            H, W = gt.shape[1], gt.shape[2]
+            # derive downsamples
+            pan2 = resize_hw(pan[i], (W // 2, H // 2))
+            pan4 = resize_hw(pan[i], (W // 4, H // 4))
+            gt_full = gt[i]
+            gt2 = resize_hw(gt_full, (W // 2, H // 2))
+            gt4 = resize_hw(gt_full, (W // 4, H // 4))
+            ms_i = ms[i] if ms is not None else resize_hw(gt_full, (64, 64))
+            ms2 = resize_hw(ms_i, (128, 128))
 
-                example = tf.train.Example(features=tf.train.Features(feature={
-                    'pan_raw': _bytes_feature(pan[i].tobytes()),
-                    'pan2_raw': _bytes_feature(pan2.tobytes()),
-                    'pan4_raw': _bytes_feature(pan4.tobytes()),
-                    'gt_raw': _bytes_feature(gt_full.tobytes()),
-                    'ms_raw': _bytes_feature(ms_i.tobytes()),
-                    'ms2_raw': _bytes_feature(ms2.tobytes()),
-                }))
-                writer.write(example.SerializeToString())
-        else:
-            # Mode 2: per-scene mats in directory
-            mats = [f for f in os.listdir(mat_dir) if f.endswith('.mat')]
-            count = 0
-            for fname in sorted(mats):
-                path = os.path.join(mat_dir, fname)
-                m = sio.loadmat(path)
-                # GT candidate (31+ channels)
-                gt_key = _find_candidate_key(m, want_channels=31)
-                if gt_key is None:
-                    # skip files without a valid HSI
-                    continue
-                gt = np.array(m[gt_key], dtype=np.float32)
-                if gt.ndim == 4:
-                    # handle packed samples inside one file
-                    for i in range(gt.shape[0]):
-                        gt_i = gt[i]
-                        H, W = gt_i.shape[0], gt_i.shape[1]
-                        # PAN candidate (3+ channels)
-                        pan_key = None
-                        for pk in ['msi', 'pan']:
-                            if pk in m:
-                                pan_key = pk
-                                break
-                        pan_i = np.array(m[pan_key][i], dtype=np.float32) if pan_key else None
-                        if pan_i is None:
-                            idx_b, idx_g, idx_r = 7, 15, 23
-                            pan_i = np.stack([gt_i[..., idx_b], gt_i[..., idx_g], gt_i[..., idx_r]], axis=-1)
-
-                        pan2 = resize_hw(pan_i, (W // 2, H // 2))
-                        pan4 = resize_hw(pan_i, (W // 4, H // 4))
-                        gt2 = resize_hw(gt_i, (W // 2, H // 2))
-                        gt4 = resize_hw(gt_i, (W // 4, H // 4))
-                        ms_i = resize_hw(gt_i, (64, 64))
-                        ms2 = resize_hw(ms_i, (128, 128))
-
-                        example = tf.train.Example(features=tf.train.Features(feature={
-                            'pan_raw': _bytes_feature(pan_i.tobytes()),
-                            'pan2_raw': _bytes_feature(pan2.tobytes()),
-                            'pan4_raw': _bytes_feature(pan4.tobytes()),
-                            'gt_raw': _bytes_feature(gt_i.tobytes()),
-                            'ms_raw': _bytes_feature(ms_i.tobytes()),
-                            'ms2_raw': _bytes_feature(ms2.tobytes()),
-                        }))
-                        writer.write(example.SerializeToString())
-                        count += 1
-                else:
-                    # single sample per file
-                    H, W = gt.shape[0], gt.shape[1]
+            example = tf.train.Example(features=tf.train.Features(feature={
+                'pan_raw': _bytes_feature(pan[i].tobytes()),
+                'pan2_raw': _bytes_feature(pan2.tobytes()),
+                'pan4_raw': _bytes_feature(pan4.tobytes()),
+                'gt_raw': _bytes_feature(gt_full.tobytes()),
+                'ms_raw': _bytes_feature(ms_i.tobytes()),
+                'ms2_raw': _bytes_feature(ms2.tobytes()),
+            }))
+            writer.write(example.SerializeToString())
+    else:
+        # Mode 2: per-scene mats in directory
+        mats = [f for f in os.listdir(mat_dir) if f.endswith('.mat')]
+        count = 0
+        for fname in sorted(mats):
+            path = os.path.join(mat_dir, fname)
+            m = sio.loadmat(path)
+            # GT candidate (31+ channels)
+            gt_key = _find_candidate_key(m, want_channels=31)
+            if gt_key is None:
+                # skip files without a valid HSI
+                continue
+            gt = np.array(m[gt_key], dtype=np.float32)
+            if gt.ndim == 4:
+                # handle packed samples inside one file
+                for i in range(gt.shape[0]):
+                    gt_i = gt[i]
+                    H, W = gt_i.shape[0], gt_i.shape[1]
+                    # PAN candidate (3+ channels)
                     pan_key = None
                     for pk in ['msi', 'pan']:
                         if pk in m:
                             pan_key = pk
                             break
-                    pan = np.array(m[pan_key], dtype=np.float32) if pan_key else None
-                    if pan is None:
+                    pan_i = np.array(m[pan_key][i], dtype=np.float32) if pan_key else None
+                    if pan_i is None:
                         idx_b, idx_g, idx_r = 7, 15, 23
-                        pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
+                        pan_i = np.stack([gt_i[..., idx_b], gt_i[..., idx_g], gt_i[..., idx_r]], axis=-1)
 
-                    pan2 = resize_hw(pan, (W // 2, H // 2))
-                    pan4 = resize_hw(pan, (W // 4, H // 4))
-                    gt2 = resize_hw(gt, (W // 2, H // 2))
-                    gt4 = resize_hw(gt, (W // 4, H // 4))
-                    ms = resize_hw(gt, (64, 64))
-                    ms2 = resize_hw(ms, (128, 128))
+                    pan2 = resize_hw(pan_i, (W // 2, H // 2))
+                    pan4 = resize_hw(pan_i, (W // 4, H // 4))
+                    gt2 = resize_hw(gt_i, (W // 2, H // 2))
+                    gt4 = resize_hw(gt_i, (W // 4, H // 4))
+                    ms_i = resize_hw(gt_i, (64, 64))
+                    ms2 = resize_hw(ms_i, (128, 128))
 
                     example = tf.train.Example(features=tf.train.Features(feature={
-                        'pan_raw': _bytes_feature(pan.tobytes()),
+                        'pan_raw': _bytes_feature(pan_i.tobytes()),
                         'pan2_raw': _bytes_feature(pan2.tobytes()),
                         'pan4_raw': _bytes_feature(pan4.tobytes()),
-                        'gt_raw': _bytes_feature(gt.tobytes()),
-                        'ms_raw': _bytes_feature(ms.tobytes()),
+                        'gt_raw': _bytes_feature(gt_i.tobytes()),
+                        'ms_raw': _bytes_feature(ms_i.tobytes()),
                         'ms2_raw': _bytes_feature(ms2.tobytes()),
                     }))
                     writer.write(example.SerializeToString())
                     count += 1
+            else:
+                # single sample per file
+                H, W = gt.shape[0], gt.shape[1]
+                pan_key = None
+                for pk in ['msi', 'pan']:
+                    if pk in m:
+                        pan_key = pk
+                        break
+                pan = np.array(m[pan_key], dtype=np.float32) if pan_key else None
+                if pan is None:
+                    idx_b, idx_g, idx_r = 7, 15, 23
+                    pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
 
-            print('Wrote {} samples to {}'.format(count, save_path))
+                pan2 = resize_hw(pan, (W // 2, H // 2))
+                pan4 = resize_hw(pan, (W // 4, H // 4))
+                gt2 = resize_hw(gt, (W // 2, H // 2))
+                gt4 = resize_hw(gt, (W // 4, H // 4))
+                ms = resize_hw(gt, (64, 64))
+                ms2 = resize_hw(ms, (128, 128))
 
-        writer.close()
-        return save_path
-    _ensure_dir(os.path.dirname(save_path))
-    writer = tf.python_io.TFRecordWriter(save_path)
-    for i in range(N):
-        example = tf.train.Example(features=tf.train.Features(feature={
-            'pan_raw': _bytes_feature(pan[i].tobytes()),
-            'pan2_raw': _bytes_feature(pan2[i].tobytes()),
-            'pan4_raw': _bytes_feature(pan4[i].tobytes()),
-            'gt_raw': _bytes_feature(gt[i].tobytes()),
-            'ms_raw': _bytes_feature(ms[i].tobytes()),
-            'ms2_raw': _bytes_feature(ms2[i].tobytes()),
-        }))
-        writer.write(example.SerializeToString())
+                example = tf.train.Example(features=tf.train.Features(feature={
+                    'pan_raw': _bytes_feature(pan.tobytes()),
+                    'pan2_raw': _bytes_feature(pan2.tobytes()),
+                    'pan4_raw': _bytes_feature(pan4.tobytes()),
+                    'gt_raw': _bytes_feature(gt.tobytes()),
+                    'ms_raw': _bytes_feature(ms.tobytes()),
+                    'ms2_raw': _bytes_feature(ms2.tobytes()),
+                }))
+                writer.write(example.SerializeToString())
+                count += 1
+
+        print('Wrote {} samples to {}'.format(count, save_path))
+
     writer.close()
     return save_path
 
@@ -264,72 +263,68 @@ def compute_ergas(mse, out):
     return ergas
 
 
+def _l2(weight_decay):
+    return tf.keras.regularizers.l2(weight_decay)
+
+
+def _vsi():
+    try:
+        return tf.compat.v1.variance_scaling_initializer()
+    except Exception:
+        return tf.keras.initializers.VarianceScaling()
+
+
+def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return tf.compat.v1.layers.conv2d(
+            inputs=x,
+            filters=num_outputs,
+            kernel_size=kernel_size,
+            strides=stride,
+            padding='SAME',
+            activation=activation_fn,
+            kernel_initializer=_vsi(),
+            kernel_regularizer=_l2(weight_decay),
+            use_bias=True,
+            name='conv')
+
+
+def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
+        return tf.compat.v1.layers.conv2d_transpose(
+            inputs=x,
+            filters=num_outputs,
+            kernel_size=kernel_size,
+            strides=stride,
+            padding='SAME',
+            activation=activation_fn,
+            kernel_initializer=_vsi(),
+            kernel_regularizer=_l2(weight_decay),
+            use_bias=True,
+            name='deconv')
+
+
 def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
     with tf.variable_scope('py'):
         if reuse:
             tf.get_variable_scope().reuse_variables()
 
-        lms = ly.conv2d_transpose(
-            Y,
-            num_outputs=num_spectral,
-            kernel_size=12,
-            stride=8,
-            activation_fn=None,
-            weights_initializer=ly.variance_scaling_initializer(),
-            weights_regularizer=ly.l2_regularizer(weight_decay),
-            reuse=tf.AUTO_REUSE,
-            scope="lms",
-        )
+        lms = _conv2d_transpose(Y, num_outputs=num_spectral, kernel_size=12, stride=8,
+                                activation_fn=None, scope='lms', weight_decay=weight_decay)
 
         Xin = tf.concat([lms, Z], axis=3)
-        Xt = ly.conv2d(
-            Xin,
-            num_outputs=num_fm,
-            kernel_size=3,
-            stride=1,
-            weights_regularizer=ly.l2_regularizer(weight_decay),
-            weights_initializer=ly.variance_scaling_initializer(),
-            activation_fn=tf.nn.leaky_relu,
-            reuse=tf.AUTO_REUSE,
-            scope="in",
-        )
+        Xt = _conv2d(Xin, num_outputs=num_fm, kernel_size=3, stride=1,
+                     activation_fn=tf.nn.leaky_relu, scope='in', weight_decay=weight_decay)
 
         for i in range(4):
-            Xi = ly.conv2d(
-                Xt,
-                num_outputs=num_fm,
-                kernel_size=3,
-                stride=1,
-                weights_regularizer=ly.l2_regularizer(weight_decay),
-                weights_initializer=ly.variance_scaling_initializer(),
-                activation_fn=tf.nn.leaky_relu,
-                reuse=tf.AUTO_REUSE,
-                scope="res" + str(i) + "1",
-            )
-            Xi = ly.conv2d(
-                Xi,
-                num_outputs=num_fm,
-                kernel_size=3,
-                stride=1,
-                weights_regularizer=ly.l2_regularizer(weight_decay),
-                weights_initializer=ly.variance_scaling_initializer(),
-                activation_fn=tf.nn.leaky_relu,
-                reuse=tf.AUTO_REUSE,
-                scope="res" + str(i) + "2",
-            )
+            Xi = _conv2d(Xt, num_outputs=num_fm, kernel_size=3, stride=1,
+                         activation_fn=tf.nn.leaky_relu, scope='res{}1'.format(i), weight_decay=weight_decay)
+            Xi = _conv2d(Xi, num_outputs=num_fm, kernel_size=3, stride=1,
+                         activation_fn=tf.nn.leaky_relu, scope='res{}2'.format(i), weight_decay=weight_decay)
             Xt = Xt + Xi
 
-        X = ly.conv2d(
-            Xt,
-            num_outputs=num_spectral,
-            kernel_size=3,
-            stride=1,
-            weights_regularizer=ly.l2_regularizer(weight_decay),
-            weights_initializer=ly.variance_scaling_initializer(),
-            activation_fn=tf.nn.leaky_relu,
-            reuse=tf.AUTO_REUSE,
-            scope="out",
-        )
+        X = _conv2d(Xt, num_outputs=num_spectral, kernel_size=3, stride=1,
+                    activation_fn=tf.nn.leaky_relu, scope='out', weight_decay=weight_decay)
 
         return X
 
@@ -339,29 +334,11 @@ def boost_lap(X, Z_in, Y_in, num_spectral=31, num_fm=128, reuse=True, weight_dec
         if reuse:
             tf.get_variable_scope().reuse_variables()
 
-        Z = ly.conv2d(
-            X,
-            num_outputs=3,
-            kernel_size=3,
-            stride=1,
-            weights_regularizer=ly.l2_regularizer(weight_decay),
-            weights_initializer=ly.variance_scaling_initializer(),
-            activation_fn=tf.nn.leaky_relu,
-            reuse=tf.AUTO_REUSE,
-            scope='dz',
-        )
+        Z = _conv2d(X, num_outputs=3, kernel_size=3, stride=1,
+                    activation_fn=tf.nn.leaky_relu, scope='dz', weight_decay=weight_decay)
 
-        Y = ly.conv2d(
-            X,
-            num_outputs=num_spectral,
-            kernel_size=12,
-            stride=8,
-            weights_regularizer=ly.l2_regularizer(weight_decay),
-            weights_initializer=ly.variance_scaling_initializer(),
-            activation_fn=tf.nn.leaky_relu,
-            reuse=tf.AUTO_REUSE,
-            scope='dy',
-        )
+        Y = _conv2d(X, num_outputs=num_spectral, kernel_size=12, stride=8,
+                    activation_fn=tf.nn.leaky_relu, scope='dy', weight_decay=weight_decay)
 
         dZ = Z_in - Z
         dY = Y_in - Y
@@ -383,15 +360,8 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight
             X = boost_lap(X, Z, Y, num_spectral=num_spectral, num_fm=num_fm, reuse=True, weight_decay=weight_decay)
             Xs = tf.concat([Xs, X], axis=3)
 
-        X = ly.conv2d(
-            Xs,
-            num_outputs=num_spectral,
-            kernel_size=3,
-            stride=1,
-            weights_regularizer=ly.l2_regularizer(weight_decay),
-            weights_initializer=ly.variance_scaling_initializer(),
-            activation_fn=None,
-        )
+        X = _conv2d(Xs, num_outputs=num_spectral, kernel_size=3, stride=1,
+                    activation_fn=None, scope='fusion_out', weight_decay=weight_decay)
         return X
 
 
@@ -405,9 +375,9 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=2e-5)
     args = parser.parse_args()
 
-    # Basic TF1 check
+    # Enable TF1 behavior under TF2 runtimes
     if tf.__version__.startswith('2'):
-        raise RuntimeError('This script requires TensorFlow 1.x (tf.contrib). Please install TF 1.15.x.')
+        tf.compat.v1.disable_eager_execution()
 
     os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
 
@@ -446,8 +416,8 @@ def main():
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
 
-    init = tf.global_variables_initializer()
-    saver = tf.train.Saver()
+    init = tf.compat.v1.global_variables_initializer()
+    saver = tf.compat.v1.train.Saver()
 
     average_psnr = 0.0
     average_ssim = 0.0
@@ -457,7 +427,7 @@ def main():
     gt_out = np.zeros(shape=[args.num_images, image_size, image_size, 31], dtype=np.float32)
     net_out = np.zeros(shape=[args.num_images, image_size, image_size, 31], dtype=np.float32)
 
-    with tf.Session(config=config) as sess:
+    with tf.compat.v1.Session(config=config) as sess:
         sess.run(init)
 
         coord = tf.train.Coordinator()
