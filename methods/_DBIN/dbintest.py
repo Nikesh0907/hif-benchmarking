@@ -285,38 +285,34 @@ def _vsi():
         return tf.compat.v1.glorot_uniform_initializer()
 
 
-def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
+def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay, use_bias=True):
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         in_channels = x.get_shape().as_list()[-1]
         kernel = tf.compat.v1.get_variable(
-            'weights',
+            'kernel',
             shape=[kernel_size, kernel_size, in_channels, num_outputs],
             initializer=_vsi(),
         )
-        bias = tf.compat.v1.get_variable(
-            'biases',
-            shape=[num_outputs],
-            initializer=tf.zeros_initializer(),
-        )
         y = tf.nn.conv2d(x, kernel, [1, stride, stride, 1], 'SAME')
-        y = tf.nn.bias_add(y, bias)
+        if use_bias:
+            bias = tf.compat.v1.get_variable(
+                'bias',
+                shape=[num_outputs],
+                initializer=tf.zeros_initializer(),
+            )
+            y = tf.nn.bias_add(y, bias)
         if activation_fn is not None:
             y = activation_fn(y)
         return y
 
 
-def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
+def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay, use_bias=True):
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         in_channels = x.get_shape().as_list()[-1]
         kernel = tf.compat.v1.get_variable(
-            'weights',
+            'kernel',
             shape=[kernel_size, kernel_size, num_outputs, in_channels],
             initializer=_vsi(),
-        )
-        bias = tf.compat.v1.get_variable(
-            'biases',
-            shape=[num_outputs],
-            initializer=tf.zeros_initializer(),
         )
         x_shape = tf.shape(x)
         out_shape = tf.stack([
@@ -326,7 +322,13 @@ def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope,
             tf.cast(num_outputs, tf.int32),
         ])
         y = tf.nn.conv2d_transpose(x, kernel, out_shape, [1, stride, stride, 1], 'SAME')
-        y = tf.nn.bias_add(y, bias)
+        if use_bias:
+            bias = tf.compat.v1.get_variable(
+                'bias',
+                shape=[num_outputs],
+                initializer=tf.zeros_initializer(),
+            )
+            y = tf.nn.bias_add(y, bias)
         if activation_fn is not None:
             y = activation_fn(y)
         return y
@@ -337,8 +339,11 @@ def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
+        # Note: EDBIN uses a carafe upsample under scope 'up_net'. Our TF-only
+        # script approximates it via a single deconv named 'lms'. These vars
+        # may not exist in the EDBIN checkpoint and will remain randomly init.
         lms = _conv2d_transpose(Y, num_outputs=num_spectral, kernel_size=12, stride=8,
-                                activation_fn=None, scope='lms', weight_decay=weight_decay)
+                    activation_fn=None, scope='lms', weight_decay=weight_decay)
 
         Xin = tf.concat([lms, Z], axis=3)
         Xt = _conv2d(Xin, num_outputs=num_fm, kernel_size=3, stride=1,
@@ -352,7 +357,7 @@ def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
             Xt = Xt + Xi
 
         X = _conv2d(Xt, num_outputs=num_spectral, kernel_size=3, stride=1,
-                    activation_fn=tf.nn.leaky_relu, scope='out', weight_decay=weight_decay)
+                activation_fn=tf.nn.leaky_relu, scope='out', weight_decay=weight_decay)
 
         return X
 
@@ -391,8 +396,9 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight
 
         # Final conv in original had no explicit scope under slim; common names include 'Conv' or 'Conv_1'.
         # Use 'Conv' here, but allow smart checkpoint remapping if names differ.
+        # Match EDBIN final conv naming and no bias: scope 'out_conv', var 'kernel'
         X = _conv2d(Xs, num_outputs=num_spectral, kernel_size=3, stride=1,
-                    activation_fn=None, scope='Conv', weight_decay=weight_decay)
+                activation_fn=None, scope='out_conv', weight_decay=weight_decay, use_bias=False)
         return X
 
 
