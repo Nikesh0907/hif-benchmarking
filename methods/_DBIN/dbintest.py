@@ -289,12 +289,12 @@ def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_de
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         in_channels = x.get_shape().as_list()[-1]
         kernel = tf.compat.v1.get_variable(
-            'kernel',
+            'weights',
             shape=[kernel_size, kernel_size, in_channels, num_outputs],
             initializer=_vsi(),
         )
         bias = tf.compat.v1.get_variable(
-            'bias',
+            'biases',
             shape=[num_outputs],
             initializer=tf.zeros_initializer(),
         )
@@ -309,12 +309,12 @@ def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope,
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         in_channels = x.get_shape().as_list()[-1]
         kernel = tf.compat.v1.get_variable(
-            'kernel',
+            'weights',
             shape=[kernel_size, kernel_size, num_outputs, in_channels],
             initializer=_vsi(),
         )
         bias = tf.compat.v1.get_variable(
-            'bias',
+            'biases',
             shape=[num_outputs],
             initializer=tf.zeros_initializer(),
         )
@@ -389,7 +389,7 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight
             Xs = tf.concat([Xs, X], axis=3)
 
         X = _conv2d(Xs, num_outputs=num_spectral, kernel_size=3, stride=1,
-                    activation_fn=None, scope='fusion_out', weight_decay=weight_decay)
+                    activation_fn=None, scope='Conv', weight_decay=weight_decay)
         return X
 
 
