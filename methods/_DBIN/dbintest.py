@@ -277,15 +277,12 @@ def compute_ergas(mse, out):
     return ergas
 
 
-def _l2(weight_decay):
-    return tf.keras.regularizers.l2(weight_decay)
-
-
 def _vsi():
+    # Prefer TF1 initializer to avoid Keras 3 dtype/ref issues
     try:
         return tf.compat.v1.variance_scaling_initializer()
     except Exception:
-        return tf.keras.initializers.VarianceScaling()
+        return tf.compat.v1.glorot_uniform_initializer()
 
 
 def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
@@ -295,7 +292,6 @@ def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_de
             'kernel',
             shape=[kernel_size, kernel_size, in_channels, num_outputs],
             initializer=_vsi(),
-            regularizer=_l2(weight_decay),
         )
         bias = tf.compat.v1.get_variable(
             'bias',
@@ -316,7 +312,6 @@ def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope,
             'kernel',
             shape=[kernel_size, kernel_size, num_outputs, in_channels],
             initializer=_vsi(),
-            regularizer=_l2(weight_decay),
         )
         bias = tf.compat.v1.get_variable(
             'bias',
