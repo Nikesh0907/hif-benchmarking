@@ -290,32 +290,51 @@ def _vsi():
 
 def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        return tf.compat.v1.layers.conv2d(
-            inputs=x,
-            filters=num_outputs,
-            kernel_size=kernel_size,
-            strides=stride,
-            padding='SAME',
-            activation=activation_fn,
-            kernel_initializer=_vsi(),
-            kernel_regularizer=_l2(weight_decay),
-            use_bias=True,
-            name='conv')
+        in_channels = x.get_shape().as_list()[-1]
+        kernel = tf.compat.v1.get_variable(
+            'kernel',
+            shape=[kernel_size, kernel_size, in_channels, num_outputs],
+            initializer=_vsi(),
+            regularizer=_l2(weight_decay),
+        )
+        bias = tf.compat.v1.get_variable(
+            'bias',
+            shape=[num_outputs],
+            initializer=tf.zeros_initializer(),
+        )
+        y = tf.nn.conv2d(x, kernel, [1, stride, stride, 1], 'SAME')
+        y = tf.nn.bias_add(y, bias)
+        if activation_fn is not None:
+            y = activation_fn(y)
+        return y
 
 
 def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay):
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        return tf.compat.v1.layers.conv2d_transpose(
-            inputs=x,
-            filters=num_outputs,
-            kernel_size=kernel_size,
-            strides=stride,
-            padding='SAME',
-            activation=activation_fn,
-            kernel_initializer=_vsi(),
-            kernel_regularizer=_l2(weight_decay),
-            use_bias=True,
-            name='deconv')
+        in_channels = x.get_shape().as_list()[-1]
+        kernel = tf.compat.v1.get_variable(
+            'kernel',
+            shape=[kernel_size, kernel_size, num_outputs, in_channels],
+            initializer=_vsi(),
+            regularizer=_l2(weight_decay),
+        )
+        bias = tf.compat.v1.get_variable(
+            'bias',
+            shape=[num_outputs],
+            initializer=tf.zeros_initializer(),
+        )
+        x_shape = tf.shape(x)
+        out_shape = tf.stack([
+            x_shape[0],
+            x_shape[1] * stride,
+            x_shape[2] * stride,
+            tf.cast(num_outputs, tf.int32),
+        ])
+        y = tf.nn.conv2d_transpose(x, kernel, out_shape, [1, stride, stride, 1], 'SAME')
+        y = tf.nn.bias_add(y, bias)
+        if activation_fn is not None:
+            y = activation_fn(y)
+        return y
 
 
 def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
