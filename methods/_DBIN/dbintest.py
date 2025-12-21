@@ -31,8 +31,22 @@ try:
 except Exception:
     from skimage.metrics import structural_similarity as compare_ssim
 
-# Import the repo's TFRecord reader for test data (absolute path import for script execution)
-from methods._DBIN.mat_convert_to_tfrecord_p_end import read_and_decode_test
+# Ensure repo root is on sys.path so absolute imports work when run as a script
+FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(FILE_DIR, '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+# Import the TFRecord reader for test data with a robust fallback
+try:
+    from methods._DBIN.mat_convert_to_tfrecord_p_end import read_and_decode_test
+except ModuleNotFoundError:
+    import importlib.util
+    reader_path = os.path.join(FILE_DIR, 'mat_convert_to_tfrecord_p_end.py')
+    spec = importlib.util.spec_from_file_location('mat_reader', reader_path)
+    mat_reader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mat_reader)
+    read_and_decode_test = mat_reader.read_and_decode_test
 import scipy.io as sio
 
 
@@ -430,8 +444,8 @@ def main():
     with tf.compat.v1.Session(config=config) as sess:
         sess.run(init)
 
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(coord=coord)
+        coord = tf.compat.v1.train.Coordinator()
+        threads = tf.compat.v1.train.start_queue_runners(coord=coord)
 
         # Restore checkpoint
         if tf.train.get_checkpoint_state(args.model_dir):
