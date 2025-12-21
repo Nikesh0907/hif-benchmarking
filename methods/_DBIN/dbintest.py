@@ -381,6 +381,7 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
+        # Keep inner scopes identical to original: 'py', 'lms', 'in', 'res..', 'out'
         X = Fusion(Z, Y, num_spectral=num_spectral, num_fm=num_fm, reuse=False, weight_decay=weight_decay)
         Xs = X
 
@@ -388,6 +389,8 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=128, num_ite=5, reuse=False, weight
             X = boost_lap(X, Z, Y, num_spectral=num_spectral, num_fm=num_fm, reuse=True, weight_decay=weight_decay)
             Xs = tf.concat([Xs, X], axis=3)
 
+        # Final conv in original had no explicit scope under slim; common names include 'Conv' or 'Conv_1'.
+        # Use 'Conv' here, but allow smart checkpoint remapping if names differ.
         X = _conv2d(Xs, num_outputs=num_spectral, kernel_size=3, stride=1,
                     activation_fn=None, scope='Conv', weight_decay=weight_decay)
         return X
@@ -461,11 +464,57 @@ def main():
         coord = tf.compat.v1.train.Coordinator()
         threads = tf.compat.v1.train.start_queue_runners(coord=coord)
 
-        # Restore checkpoint
+        # Restore checkpoint with smart fallback name remapping if needed
         if tf.compat.v1.train.get_checkpoint_state(args.model_dir):
             ckpt = tf.compat.v1.train.latest_checkpoint(args.model_dir)
-            saver.restore(sess, ckpt)
-            print('Loaded checkpoint:', ckpt)
+            try:
+                saver.restore(sess, ckpt)
+                print('Loaded checkpoint:', ckpt)
+            except Exception as e:
+                print('Standard restore failed, attempting smart remap:', str(e))
+                # Build mapping from checkpoint names to current graph variables
+                reader = tf.compat.v1.train.NewCheckpointReader(ckpt)
+                ckpt_vars = set(reader.get_variable_to_shape_map().keys())
+                graph_vars = tf.compat.v1.trainable_variables()
+                remap = {}
+                for v in graph_vars:
+                    name = v.name.split(':')[0]
+                    # Direct match
+                    if name in ckpt_vars:
+                        remap[name] = v
+                        continue
+                    # Try common alternatives for final fusion conv
+                    trial_names = [
+                        name,
+                        name.replace('/Conv/', '/Conv_1/'),
+                        name.replace('/Conv/', '/conv2d/'),
+                        name.replace('/Conv/', '/conv2d_1/'),
+                        name.replace('/Conv/', '/out/'),
+                        name.replace('/py/', '/'),
+                    ]
+                    matched = False
+                    for t in trial_names:
+                        if t in ckpt_vars:
+                            remap[t] = v
+                            matched = True
+                            break
+                    if not matched:
+                        # As last resort, look for same tail (e.g., 'weights'/'biases') within fusion_net scope
+                        tail = name.split('/')[-2:]  # e.g., ['Conv', 'weights']
+                        for cv in ckpt_vars:
+                            if cv.endswith('/'.join(tail)) and ('fusion_net/' in cv or 'recursive/' in cv or 'py/' in cv):
+                                remap[cv] = v
+                                matched = True
+                                break
+                    if not matched:
+                        print('No checkpoint match for var:', name)
+                if remap:
+                    print('Remapping and restoring {} variables...'.format(len(remap)))
+                    saver_remap = tf.compat.v1.train.Saver(var_list=remap)
+                    saver_remap.restore(sess, ckpt)
+                    print('Loaded checkpoint with remapped names:', ckpt)
+                else:
+                    raise RuntimeError('Failed to map any variables from checkpoint {} to current graph'.format(ckpt))
         else:
             raise RuntimeError('No checkpoint found in {}'.format(args.model_dir))
 
