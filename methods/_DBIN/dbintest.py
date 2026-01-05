@@ -24,7 +24,10 @@ import numpy as np
 import scipy.io as sio
 
 import tensorflow as tf
-import cv2
+try:
+    import cv2  # optional; may fail on headless images missing libGL
+except Exception:  # pragma: no cover
+    cv2 = None
 try:
     from skimage.measure import compare_ssim
 except Exception:
@@ -386,6 +389,32 @@ def global_avg_pool(x):
     return tf.reduce_mean(x, axis=[1, 2])
 
 
+def dense_manual(x, units, activation_fn=None, scope='dense'):
+    """Keras-3-safe dense layer with TF1-style variable names.
+
+    Matches the variable naming used by `tf.layers.dense(name=...)` in TF1:
+    `<scope>/kernel` and `<scope>/bias`.
+    """
+    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
+        in_dim = x.get_shape().as_list()[-1]
+        if in_dim is None:
+            raise ValueError('dense_manual requires a static last dimension')
+        w = tf.compat.v1.get_variable(
+            'kernel',
+            shape=[in_dim, units],
+            initializer=_vsi(),
+        )
+        b = tf.compat.v1.get_variable(
+            'bias',
+            shape=[units],
+            initializer=tf.zeros_initializer(),
+        )
+        y = tf.matmul(x, w) + b
+        if activation_fn is not None:
+            y = activation_fn(y)
+        return y
+
+
 def spectral_norm(w, iteration=1):
     # Matches methods/_DBIN/utils3.py naming and behavior
     w_shape = w.shape.as_list()
@@ -500,6 +529,26 @@ def upsample(x, weight_decay, reuse=True):
         return x
 
 
+    def _resize_hw(image, new_h, new_w):
+        """Resize HxWxC float32 image.
+
+        Prefers OpenCV INTER_AREA for downsampling, but falls back to skimage when
+        OpenCV is unavailable (e.g., missing libGL in headless containers).
+        """
+        if cv2 is not None:
+            return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        from skimage.transform import resize as sk_resize
+
+        return sk_resize(
+            image,
+            (new_h, new_w, image.shape[2]),
+            order=1,
+            mode='reflect',
+            anti_aliasing=True,
+            preserve_range=True,
+        ).astype(np.float32)
+
+
 def Fusion(Z, Y, weight_decay, num_spectral=31, num_fm=64, reuse=True):
     # Exact structure from methods/_DBIN/train_cave_edbin.py
     with tf.compat.v1.variable_scope('py'):
@@ -518,21 +567,8 @@ def Fusion(Z, Y, weight_decay, num_spectral=31, num_fm=64, reuse=True):
             Xi = conv_sn(Xi, num_fm, weight_decay, scope='res{}2'.format(i))
 
             mask = global_avg_pool(Xi)
-            mask = tf.compat.v1.layers.dense(
-                inputs=mask,
-                units=num_fm // 16,
-                use_bias=True,
-                activation=tf.nn.relu,
-                reuse=tf.compat.v1.AUTO_REUSE,
-                name='se{}1'.format(i),
-            )
-            mask = tf.compat.v1.layers.dense(
-                inputs=mask,
-                units=num_fm,
-                use_bias=True,
-                reuse=tf.compat.v1.AUTO_REUSE,
-                name='se{}2'.format(i),
-            )
+            mask = dense_manual(mask, units=num_fm // 16, activation_fn=tf.nn.relu, scope='se{}1'.format(i))
+            mask = dense_manual(mask, units=num_fm, activation_fn=None, scope='se{}2'.format(i))
             mask = tf.reshape(mask, [-1, 1, 1, num_fm])
             mask = tf.sigmoid(mask)
             Xi = tf.multiply(Xi, mask)
