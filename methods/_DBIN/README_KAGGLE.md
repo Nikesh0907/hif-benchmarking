@@ -31,13 +31,19 @@ Kaggle usually already has most of these; this is safe if missing.
 
 ### 3) Run DBIN evaluation
 
-If your dataset folder contains per-scene MAT files with an HSI cube (often key `hsi`) like:
-`/kaggle/input/cave-dataset-2/Data/Test/HSI`
+For good metrics, DBIN expects:
+- **GT HSI** (31 bands) per scene
+- **RGB/MSI** per scene (same basename)
+
+Example (CAVE Kaggle datasets often have these folders):
+- HSI: `/kaggle/input/cave-dataset-2/Data/Test/HSI`
+- RGB: `/kaggle/input/cave-dataset-2/Data/Test/RGB` (or sometimes `MSI`)
 
 Run:
 
 ```bash
 !python methods/_DBIN/dbintest.py /kaggle/input/cave-dataset-2/Data/Test/HSI \
+  --rgb_dir /kaggle/input/cave-dataset-2/Data/Test/RGB \
   --model_dir methods/_DBIN/models_ibp_sn22 \
   --batch_size 1 \
   --image_size 512 \
@@ -48,6 +54,8 @@ Notes:
 - `--num_images 0` auto-counts records and avoids hanging if you guess wrong.
 - Metrics are printed per image and averaged at the end.
 - Outputs are saved to `result/out.mat`.
+
+If you don't provide `--rgb_dir`, the script will synthesize a 3-channel proxy from 3 HSI bands. That usually produces **very poor PSNR/SSIM**, because it doesn't match the model's training input distribution.
 
 ### 4) Where outputs go
 

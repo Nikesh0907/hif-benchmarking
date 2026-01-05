@@ -120,7 +120,7 @@ def _load_mat(path, key, want_channels=None, allow_autodetect=False):
     raise KeyError('Key {} not found in {}. Available: {}'.format(key, path, list(m.keys())))
 
 
-def convert_mats_to_test_tfrecord(mat_dir, save_path):
+def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
     """
     Create a test-style TFRecord with features expected by read_and_decode_test:
       pan_raw [512,512,3], pan2_raw [256,256,3], pan4_raw [128,128,3],
@@ -148,6 +148,43 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
         for i in range(arr.shape[0]):
             out.append(cv2.resize(arr[i], new_hw, interpolation=cv2.INTER_LINEAR))
         return np.stack(out, axis=0).astype(np.float32)
+
+    def downsample_hsi_to(arr_hwc, out_hw):
+        # Better downsample for MS generation than bilinear: INTER_AREA is designed for shrink.
+        h, w = out_hw
+        out = []
+        for c in range(arr_hwc.shape[2]):
+            out.append(cv2.resize(arr_hwc[:, :, c], (w, h), interpolation=cv2.INTER_AREA))
+        return np.stack(out, axis=2).astype(np.float32)
+
+    def try_load_rgb_for_scene(scene_basename):
+        if not rgb_dir:
+            return None
+        # 1) Try a MAT with key 'rgb' or 'msi'
+        mat_path = os.path.join(rgb_dir, scene_basename + '.mat')
+        if os.path.isfile(mat_path):
+            try:
+                m = sio.loadmat(mat_path)
+                if 'rgb' in m:
+                    return _normalize01(np.array(m['rgb'], dtype=np.float32))
+                if 'msi' in m:
+                    return _normalize01(np.array(m['msi'], dtype=np.float32))
+            except Exception:
+                pass
+        # 2) Try common image extensions
+        for ext in ['.bmp', '.png', '.jpg', '.jpeg', '.tif', '.tiff']:
+            img_path = os.path.join(rgb_dir, scene_basename + ext)
+            if os.path.isfile(img_path):
+                img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                if img is None:
+                    continue
+                if img.ndim == 2:
+                    img = np.repeat(img[:, :, None], 3, axis=2)
+                # OpenCV loads BGR; convert to RGB for consistency with dataset scripts.
+                if img.shape[2] >= 3:
+                    img = cv2.cvtColor(img[:, :, :3], cv2.COLOR_BGR2RGB)
+                return _normalize01(img.astype(np.float32))
+        return None
 
     gt_path = os.path.join(mat_dir, 'gt.mat')
     ms_path = os.path.join(mat_dir, 'ms.mat')
@@ -215,6 +252,7 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                 # skip files without a valid HSI
                 continue
             gt = _normalize01(np.array(m[gt_key], dtype=np.float32))
+            scene_base = os.path.splitext(fname)[0]
             if gt.ndim == 4:
                 # handle packed samples inside one file
                 for i in range(gt.shape[0]):
@@ -228,15 +266,17 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                             break
                     pan_i = _normalize01(np.array(m[pan_key][i], dtype=np.float32)) if pan_key else None
                     if pan_i is None:
+                        pan_i = try_load_rgb_for_scene(scene_base)
+                    if pan_i is None:
+                        # Last resort: synthesize RGB from 3 HSI bands (often worse than true MSI)
                         idx_b, idx_g, idx_r = 7, 15, 23
-                        pan_i = np.stack([gt_i[..., idx_b], gt_i[..., idx_g], gt_i[..., idx_r]], axis=-1)
-                        pan_i = _normalize01(pan_i)
+                        pan_i = _normalize01(np.stack([gt_i[..., idx_b], gt_i[..., idx_g], gt_i[..., idx_r]], axis=-1))
 
                     pan2 = resize_hw(pan_i, (W // 2, H // 2))
                     pan4 = resize_hw(pan_i, (W // 4, H // 4))
                     gt2 = resize_hw(gt_i, (W // 2, H // 2))
                     gt4 = resize_hw(gt_i, (W // 4, H // 4))
-                    ms_i = resize_hw(gt_i, (64, 64))
+                    ms_i = downsample_hsi_to(gt_i, (64, 64))
                     ms2 = resize_hw(ms_i, (128, 128))
 
                     pan2 = _normalize01(pan2)
@@ -264,15 +304,16 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                         break
                 pan = _normalize01(np.array(m[pan_key], dtype=np.float32)) if pan_key else None
                 if pan is None:
+                    pan = try_load_rgb_for_scene(scene_base)
+                if pan is None:
                     idx_b, idx_g, idx_r = 7, 15, 23
-                    pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
-                    pan = _normalize01(pan)
+                    pan = _normalize01(np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1))
 
                 pan2 = resize_hw(pan, (W // 2, H // 2))
                 pan4 = resize_hw(pan, (W // 4, H // 4))
                 gt2 = resize_hw(gt, (W // 2, H // 2))
                 gt4 = resize_hw(gt, (W // 4, H // 4))
-                ms = resize_hw(gt, (64, 64))
+                ms = downsample_hsi_to(gt, (64, 64))
                 ms2 = resize_hw(ms, (128, 128))
 
                 pan2 = _normalize01(pan2)
@@ -337,122 +378,206 @@ def _vsi():
         return tf.compat.v1.glorot_uniform_initializer()
 
 
-def _conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay, use_bias=True):
+def lrelu(x, alpha=0.2):
+    return tf.nn.leaky_relu(x, alpha)
+
+
+def global_avg_pool(x):
+    return tf.reduce_mean(x, axis=[1, 2])
+
+
+def spectral_norm(w, iteration=1):
+    # Matches methods/_DBIN/utils3.py naming and behavior
+    w_shape = w.shape.as_list()
+    w_reshaped = tf.reshape(w, [-1, w_shape[-1]])
+
+    u = tf.compat.v1.get_variable(
+        'u',
+        [1, w_shape[-1]],
+        initializer=tf.random_normal_initializer(),
+        trainable=False,
+    )
+
+    u_hat = u
+    v_hat = None
+    for _ in range(iteration):
+        v_ = tf.matmul(u_hat, tf.transpose(w_reshaped))
+        v_hat = tf.nn.l2_normalize(v_)
+
+        u_ = tf.matmul(v_hat, w_reshaped)
+        u_hat = tf.nn.l2_normalize(u_)
+
+    u_hat = tf.stop_gradient(u_hat)
+    v_hat = tf.stop_gradient(v_hat)
+
+    sigma = tf.matmul(tf.matmul(v_hat, w_reshaped), tf.transpose(u_hat))
+    with tf.control_dependencies([u.assign(u_hat)]):
+        w_norm = w_reshaped / sigma * 0.7
+        w_norm = tf.reshape(w_norm, w_shape)
+    return w_norm
+
+
+def conv_sn(x, channels, weight_decay, kernel=3, stride=1, use_bias=True, scope='conv'):
+    # Drop-in for methods/_DBIN/utils3.py::conv (kernel/bias/u variable names)
+    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
+        w = tf.compat.v1.get_variable(
+            'kernel',
+            shape=[kernel, kernel, x.get_shape()[-1], channels],
+            initializer=_vsi(),
+        )
+        bias = tf.compat.v1.get_variable('bias', [channels], initializer=tf.constant_initializer(0.0))
+        y = tf.nn.conv2d(input=x, filters=spectral_norm(w), strides=[1, stride, stride, 1], padding='SAME')
+        if use_bias:
+            y = tf.nn.bias_add(y, bias)
+        return y
+
+
+def _slim_conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope):
+    # Minimal TF1-slim style conv that creates 'weights'/'biases' vars.
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
         in_channels = x.get_shape().as_list()[-1]
-        kernel = tf.compat.v1.get_variable(
-            'kernel',
+        w = tf.compat.v1.get_variable(
+            'weights',
             shape=[kernel_size, kernel_size, in_channels, num_outputs],
             initializer=_vsi(),
         )
-        y = tf.nn.conv2d(x, kernel, [1, stride, stride, 1], 'SAME')
-        if use_bias:
-            bias = tf.compat.v1.get_variable(
-                'bias',
-                shape=[num_outputs],
-                initializer=tf.zeros_initializer(),
-            )
-            y = tf.nn.bias_add(y, bias)
-        if activation_fn is not None:
-            y = activation_fn(y)
-        return y
-
-
-def _conv2d_transpose(x, num_outputs, kernel_size, stride, activation_fn, scope, weight_decay, use_bias=True):
-    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        in_channels = x.get_shape().as_list()[-1]
-        kernel = tf.compat.v1.get_variable(
-            'kernel',
-            shape=[kernel_size, kernel_size, num_outputs, in_channels],
-            initializer=_vsi(),
+        b = tf.compat.v1.get_variable(
+            'biases',
+            shape=[num_outputs],
+            initializer=tf.zeros_initializer(),
         )
-        x_shape = tf.shape(x)
-        out_shape = tf.stack([
-            x_shape[0],
-            x_shape[1] * stride,
-            x_shape[2] * stride,
-            tf.cast(num_outputs, tf.int32),
-        ])
-        y = tf.nn.conv2d_transpose(x, kernel, out_shape, [1, stride, stride, 1], 'SAME')
-        if use_bias:
-            bias = tf.compat.v1.get_variable(
-                'bias',
-                shape=[num_outputs],
-                initializer=tf.zeros_initializer(),
-            )
-            y = tf.nn.bias_add(y, bias)
+        y = tf.nn.conv2d(x, w, strides=[1, stride, stride, 1], padding='SAME')
+        y = tf.nn.bias_add(y, b)
         if activation_fn is not None:
             y = activation_fn(y)
         return y
 
 
-def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
+def carafe(x, weight_decay, i, scale=2, k_up=5):
+    # Re-implementation of train_cave_edbin.py::carafe using TF ops
+    b, h, w, c = x.get_shape().as_list()
+    h_, w_ = h * scale, w * scale
+
+    w_mask = _slim_conv2d(
+        x,
+        num_outputs=c,
+        kernel_size=3,
+        stride=1,
+        activation_fn=tf.nn.relu,
+        scope='w{}'.format(i),
+    )
+    w_mask = _slim_conv2d(
+        w_mask,
+        num_outputs=(scale * k_up) ** 2,
+        kernel_size=3,
+        stride=1,
+        activation_fn=None,
+        scope='w1{}'.format(i),
+    )
+
+    w_mask = tf.nn.depth_to_space(w_mask, 2)
+    w_mask = tf.nn.softmax(w_mask, axis=-1)
+
+    x_up = tf.image.resize(x, [h_, w_], method=tf.image.ResizeMethod.BILINEAR)
+    patches = tf.image.extract_patches(
+        images=x_up,
+        sizes=[1, k_up, k_up, 1],
+        strides=[1, 1, 1, 1],
+        rates=[1, scale, scale, 1],
+        padding='SAME',
+    )
+    patches = tf.reshape(patches, [-1, h_, w_, k_up * k_up, c])
+    x_out = tf.einsum('abcd,abcde->abce', w_mask, patches)
+    return x_out
+
+
+def upsample(x, weight_decay, reuse=True):
+    with tf.compat.v1.variable_scope('up_net'):
+        if reuse:
+            tf.compat.v1.get_variable_scope().reuse_variables()
+        for i in range(3):
+            x = carafe(x, weight_decay, i)
+        return x
+
+
+def Fusion(Z, Y, weight_decay, num_spectral=31, num_fm=64, reuse=True):
+    # Exact structure from methods/_DBIN/train_cave_edbin.py
     with tf.compat.v1.variable_scope('py'):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
-        # EDBIN upsamples MS via a learned "up_net" (CARAFE). Those weights are
-        # present in the checkpoint under different scopes than our earlier TF-only
-        # deconv approximation. To avoid random, non-restored weights ruining output,
-        # use deterministic bilinear upsampling to match Z spatial size.
-        target_h = tf.shape(Z)[1]
-        target_w = tf.shape(Z)[2]
-        lms = tf.image.resize(Y, [target_h, target_w], method=tf.image.ResizeMethod.BILINEAR)
-
+        lms = upsample(Y, weight_decay)
         Xin = tf.concat([lms, Z], axis=3)
-        Xt = _conv2d(Xin, num_outputs=num_fm, kernel_size=3, stride=1,
-                     activation_fn=tf.nn.leaky_relu, scope='in', weight_decay=weight_decay)
+
+        Xt = conv_sn(Xin, num_fm, weight_decay, scope='in')
+        Xt = lrelu(Xt)
 
         for i in range(4):
-            Xi = _conv2d(Xt, num_outputs=num_fm, kernel_size=3, stride=1,
-                         activation_fn=tf.nn.leaky_relu, scope='res{}1'.format(i), weight_decay=weight_decay)
-            Xi = _conv2d(Xi, num_outputs=num_fm, kernel_size=3, stride=1,
-                         activation_fn=tf.nn.leaky_relu, scope='res{}2'.format(i), weight_decay=weight_decay)
+            Xi = conv_sn(Xt, num_fm, weight_decay, scope='res{}1'.format(i))
+            Xi = lrelu(Xi)
+            Xi = conv_sn(Xi, num_fm, weight_decay, scope='res{}2'.format(i))
+
+            mask = global_avg_pool(Xi)
+            mask = tf.compat.v1.layers.dense(
+                inputs=mask,
+                units=num_fm // 16,
+                use_bias=True,
+                activation=tf.nn.relu,
+                reuse=tf.compat.v1.AUTO_REUSE,
+                name='se{}1'.format(i),
+            )
+            mask = tf.compat.v1.layers.dense(
+                inputs=mask,
+                units=num_fm,
+                use_bias=True,
+                reuse=tf.compat.v1.AUTO_REUSE,
+                name='se{}2'.format(i),
+            )
+            mask = tf.reshape(mask, [-1, 1, 1, num_fm])
+            mask = tf.sigmoid(mask)
+            Xi = tf.multiply(Xi, mask)
+
             Xt = Xt + Xi
 
-        X = _conv2d(Xt, num_outputs=num_spectral, kernel_size=3, stride=1,
-                activation_fn=tf.nn.leaky_relu, scope='out', weight_decay=weight_decay)
-
+        X = conv_sn(Xt, num_spectral, weight_decay, scope='out')
         return X
 
 
-def boost_lap(X, Z_in, Y_in, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
+def boost_lap(X, Z_in, Y_in, weight_decay, num_spectral=31, num_fm=64, reuse=True):
     with tf.compat.v1.variable_scope('recursive'):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
-        Z = _conv2d(X, num_outputs=3, kernel_size=3, stride=1,
-                    activation_fn=tf.nn.leaky_relu, scope='dz', weight_decay=weight_decay)
+        Z = conv_sn(X, 3, weight_decay, scope='dz')
+        Z = lrelu(Z)
 
-        Y = _conv2d(X, num_outputs=num_spectral, kernel_size=12, stride=8,
-                    activation_fn=tf.nn.leaky_relu, scope='dy', weight_decay=weight_decay)
+        Y = conv_sn(X, num_spectral, weight_decay, kernel=12, stride=8, scope='dy')
+        Y = lrelu(Y)
 
         dZ = Z_in - Z
         dY = Y_in - Y
 
-        dX = Fusion(dZ, dY, num_spectral=num_spectral, num_fm=num_fm, reuse=True, weight_decay=weight_decay)
+        dX = Fusion(dZ, dY, weight_decay, num_spectral=num_spectral, num_fm=num_fm, reuse=True)
         X = X + dX
         return X
 
 
 def fusion_net(Z, Y, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_decay=1e-5):
+    # Exact structure from methods/_DBIN/train_cave_edbin.py
     with tf.compat.v1.variable_scope('fusion_net'):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
-        # Keep inner scopes identical to original: 'py', 'lms', 'in', 'res..', 'out'
-        X = Fusion(Z, Y, num_spectral=num_spectral, num_fm=num_fm, reuse=False, weight_decay=weight_decay)
+        X = Fusion(Z, Y, weight_decay, num_spectral=num_spectral, num_fm=num_fm, reuse=False)
         Xs = X
 
         for _ in range(num_ite):
-            X = boost_lap(X, Z, Y, num_spectral=num_spectral, num_fm=num_fm, reuse=True, weight_decay=weight_decay)
+            X = boost_lap(X, Z, Y, weight_decay, num_spectral=num_spectral, num_fm=num_fm, reuse=True)
             Xs = tf.concat([Xs, X], axis=3)
 
-        # Final conv in original had no explicit scope under slim; common names include 'Conv' or 'Conv_1'.
-        # Use 'Conv' here, but allow smart checkpoint remapping if names differ.
-        # Match EDBIN final conv naming and no bias: scope 'out_conv', var 'kernel'
-        X = _conv2d(Xs, num_outputs=num_spectral, kernel_size=3, stride=1,
-                activation_fn=None, scope='out_conv', weight_decay=weight_decay, use_bias=False)
+        # train_cave_edbin.py uses utils3.conv with scope='out_conv' and use_bias=False.
+        # utils3.conv still creates a 'bias' variable, it just doesn't add it.
+        X = conv_sn(Xs, num_spectral, weight_decay, use_bias=False, scope='out_conv')
         return X
 
 
@@ -466,6 +591,8 @@ def main():
                         help='Explicit TFRecord path (overrides positional data)')
     parser.add_argument('--mat_dir', dest='mat_dir', type=str, default=None,
                         help='Explicit MAT directory path (overrides positional data)')
+    parser.add_argument('--rgb_dir', dest='rgb_dir', type=str, default=None,
+                        help='Optional directory with matching RGB/MSI per scene (same basename). Helps match DBIN training data and improves metrics.')
     parser.add_argument('--model_dir', type=str, default=os.path.join('methods', '_DBIN', 'models_ibp_sn22'), help='Checkpoint directory (default: methods/_DBIN/models_ibp_sn22)')
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--image_size', type=int, default=512)
@@ -503,7 +630,7 @@ def main():
         _ensure_dir(out_dir)
         tfrecord_path = os.path.join(out_dir, 'autotest.tfrecords')
         print('Converting MATs in {} -> {}'.format(data_path, tfrecord_path))
-        convert_mats_to_test_tfrecord(data_path, tfrecord_path)
+        convert_mats_to_test_tfrecord(data_path, tfrecord_path, rgb_dir=args.rgb_dir)
         data_path = tfrecord_path
 
         # If user requested auto-count, we can infer after conversion.
