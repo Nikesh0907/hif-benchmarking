@@ -348,6 +348,45 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
     return save_path
 
 
+def _resolve_checkpoint(model_dir):
+    """Return a checkpoint prefix path from a directory, even if 'checkpoint' file is missing/stale.
+
+    Tries tf.compat.v1.train.latest_checkpoint first. If that fails, scans for
+    '*.ckpt.index' files and picks the numerically largest step that has a
+    matching data shard next to it.
+    """
+    import re
+
+    # 1) Try TensorFlow's standard mechanism
+    ckpt = tf.compat.v1.train.latest_checkpoint(model_dir)
+    if ckpt:
+        idx = ckpt + ".index"
+        dat = ckpt + ".data-00000-of-00001"
+        if os.path.exists(idx) and os.path.exists(dat):
+            return ckpt
+
+    # 2) Fallback: scan directory for checkpoint shards
+    candidates = []
+    for fname in os.listdir(model_dir):
+        if fname.endswith('.ckpt.index'):
+            prefix = fname[:-len('.index')]  # remove only the trailing '.index'
+            # Ensure data shard exists
+            dat = os.path.join(model_dir, prefix + '.data-00000-of-00001')
+            if not os.path.exists(dat):
+                continue
+            m = re.search(r'model-(\d+)\.ckpt$', prefix)
+            step = int(m.group(1)) if m else -1
+            candidates.append((step, os.path.join(model_dir, prefix)))
+
+    if candidates:
+        candidates.sort()
+        return candidates[-1][1]
+
+    raise RuntimeError(
+        'No valid checkpoint found in {}. Ensure .index and .data-00000-of-00001 files are present.'.format(model_dir)
+    )
+
+
 def compute_ms_ssim(image1, image2):
     image1 = np.asarray(image1)
     image2 = np.asarray(image2)
@@ -766,37 +805,37 @@ def main():
         coord = tf.compat.v1.train.Coordinator()
         threads = tf.compat.v1.train.start_queue_runners(sess=sess, coord=coord)
 
-        # Restore checkpoint using exact-name intersection with checkpoint
-        if tf.compat.v1.train.get_checkpoint_state(args.model_dir):
-            ckpt = tf.compat.v1.train.latest_checkpoint(args.model_dir)
-            try:
-                saver.restore(sess, ckpt)
-                print('Loaded checkpoint:', ckpt)
-            except Exception as e:
-                print('Standard restore failed; performing exact-name restore:', str(e))
-                reader = tf.compat.v1.train.NewCheckpointReader(ckpt)
-                ckpt_vars = set(reader.get_variable_to_shape_map().keys())
-                graph_vars = tf.compat.v1.trainable_variables()
-                exact_map = {}
-                skipped = []
-                for v in graph_vars:
-                    name = v.name.split(':')[0]
-                    if name in ckpt_vars:
-                        exact_map[name] = v
-                    else:
-                        skipped.append(name)
-                print('Will restore {} vars from checkpoint; skipping {} (not present).'.format(len(exact_map), len(skipped)))
-                if skipped:
-                    # Print a few for visibility
-                    print('Skipped examples:', skipped[:10])
-                if exact_map:
-                    saver_exact = tf.compat.v1.train.Saver(var_list=exact_map)
-                    saver_exact.restore(sess, ckpt)
-                    print('Loaded checkpoint with exact-name restore:', ckpt)
+        # Restore checkpoint using robust resolution of checkpoint prefix
+        try:
+            ckpt = _resolve_checkpoint(args.model_dir)
+        except Exception as e:
+            raise RuntimeError('No checkpoint could be resolved in {}: {}'.format(args.model_dir, e))
+
+        try:
+            saver.restore(sess, ckpt)
+            print('Loaded checkpoint:', ckpt)
+        except Exception as e:
+            print('Standard restore failed; attempting exact-name restore:', str(e))
+            reader = tf.compat.v1.train.NewCheckpointReader(ckpt)
+            ckpt_vars = set(reader.get_variable_to_shape_map().keys())
+            graph_vars = tf.compat.v1.trainable_variables()
+            exact_map = {}
+            skipped = []
+            for v in graph_vars:
+                name = v.name.split(':')[0]
+                if name in ckpt_vars:
+                    exact_map[name] = v
                 else:
-                    raise RuntimeError('No overlapping variables between graph and checkpoint {}.'.format(ckpt))
-        else:
-            raise RuntimeError('No checkpoint found in {}'.format(args.model_dir))
+                    skipped.append(name)
+            print('Will restore {} vars from checkpoint; skipping {} (not present).'.format(len(exact_map), len(skipped)))
+            if skipped:
+                print('Skipped examples:', skipped[:10])
+            if exact_map:
+                saver_exact = tf.compat.v1.train.Saver(var_list=exact_map)
+                saver_exact.restore(sess, ckpt)
+                print('Loaded checkpoint with exact-name restore:', ckpt)
+            else:
+                raise RuntimeError('No overlapping variables between graph and checkpoint {}.'.format(ckpt))
 
         for i in range(args.num_images):
             pan, pan2, pan4, gt, ms, ms2 = sess.run([pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch])
