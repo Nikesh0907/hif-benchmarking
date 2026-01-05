@@ -694,6 +694,7 @@ def main():
     parser.add_argument('--rgb_dir', dest='rgb_dir', type=str, default=None,
                         help='Optional directory with matching RGB/MSI per scene (same basename). Helps match DBIN training data and improves metrics.')
     parser.add_argument('--model_dir', type=str, default=os.path.join('methods', '_DBIN', 'models_ibp_sn22'), help='Checkpoint directory (default: methods/_DBIN/models_ibp_sn22)')
+    parser.add_argument('--ckpt', type=str, default=None, help='Optional explicit checkpoint prefix (e.g., /path/model-1000.ckpt). Overrides --model_dir discovery.')
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--image_size', type=int, default=512)
     parser.add_argument('--num_images', type=int, default=12, help='Number of test samples to evaluate. Use 0 to auto-count.')
@@ -806,10 +807,13 @@ def main():
         threads = tf.compat.v1.train.start_queue_runners(sess=sess, coord=coord)
 
         # Restore checkpoint using robust resolution of checkpoint prefix
-        try:
-            ckpt = _resolve_checkpoint(args.model_dir)
-        except Exception as e:
-            raise RuntimeError('No checkpoint could be resolved in {}: {}'.format(args.model_dir, e))
+        if args.ckpt:
+            ckpt = args.ckpt
+        else:
+            try:
+                ckpt = _resolve_checkpoint(args.model_dir)
+            except Exception as e:
+                raise RuntimeError('No checkpoint could be resolved in {}: {}'.format(args.model_dir, e))
 
         try:
             saver.restore(sess, ckpt)
