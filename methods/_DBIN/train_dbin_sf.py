@@ -2,8 +2,16 @@
 
 import argparse
 import os
+import sys
 
 import numpy as np
+
+
+# Ensure repo root is on sys.path so `methods._DBIN.*` imports work when run as a script
+FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(FILE_DIR, '..', '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 
 def read_and_decode_train_sf(tfrecords_file, batch_size, patch_size, sf):
@@ -85,7 +93,16 @@ def main():
     pan_b, gt_b, ms_b = read_and_decode_train_sf(args.train_tfrecord, args.batch, args.patch, sf)
 
     # Reuse the model definition from dbintest.py (same variable naming)
-    from methods._DBIN.dbintest import fusion_net
+    try:
+        from methods._DBIN.dbintest import fusion_net
+    except ModuleNotFoundError:
+        import importlib.util
+
+        dbintest_path = os.path.join(FILE_DIR, 'dbintest.py')
+        spec = importlib.util.spec_from_file_location('dbintest', dbintest_path)
+        db = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(db)
+        fusion_net = db.fusion_net
 
     # Multi-GPU towers: split batch across GPUs
     num_gpus = max(1, int(args.gpus))
