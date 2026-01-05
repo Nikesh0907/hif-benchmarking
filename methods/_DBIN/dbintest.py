@@ -39,16 +39,7 @@ REPO_ROOT = os.path.abspath(os.path.join(FILE_DIR, '..', '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Import the TFRecord reader for test data with a robust fallback
-try:
-    from methods._DBIN.mat_convert_to_tfrecord_p_end import read_and_decode_test
-except ModuleNotFoundError:
-    import importlib.util
-    reader_path = os.path.join(FILE_DIR, 'mat_convert_to_tfrecord_p_end.py')
-    spec = importlib.util.spec_from_file_location('mat_reader', reader_path)
-    mat_reader = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mat_reader)
-    read_and_decode_test = mat_reader.read_and_decode_test
+read_and_decode_test = None  # imported lazily inside main()
 import scipy.io as sio
 
 
@@ -461,72 +452,14 @@ def conv_sn(x, channels, weight_decay, kernel=3, stride=1, use_bias=True, scope=
         return y
 
 
-def _slim_conv2d(x, num_outputs, kernel_size, stride, activation_fn, scope):
-    # Minimal TF1-slim style conv that creates 'weights'/'biases' vars.
-    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        in_channels = x.get_shape().as_list()[-1]
-        w = tf.compat.v1.get_variable(
-            'weights',
-            shape=[kernel_size, kernel_size, in_channels, num_outputs],
-            initializer=_vsi(),
-        )
-        b = tf.compat.v1.get_variable(
-            'biases',
-            shape=[num_outputs],
-            initializer=tf.zeros_initializer(),
-        )
-        y = tf.nn.conv2d(x, w, strides=[1, stride, stride, 1], padding='SAME')
-        y = tf.nn.bias_add(y, b)
-        if activation_fn is not None:
-            y = activation_fn(y)
-        return y
+def upsample(x, ref):
+    """Bilinear upsample to match spatial size of `ref`.
 
-
-def carafe(x, weight_decay, i, scale=2, k_up=5):
-    # Re-implementation of train_cave_edbin.py::carafe using TF ops
-    b, h, w, c = x.get_shape().as_list()
-    h_, w_ = h * scale, w * scale
-
-    w_mask = _slim_conv2d(
-        x,
-        num_outputs=c,
-        kernel_size=3,
-        stride=1,
-        activation_fn=tf.nn.relu,
-        scope='w{}'.format(i),
-    )
-    w_mask = _slim_conv2d(
-        w_mask,
-        num_outputs=(scale * k_up) ** 2,
-        kernel_size=3,
-        stride=1,
-        activation_fn=None,
-        scope='w1{}'.format(i),
-    )
-
-    w_mask = tf.nn.depth_to_space(w_mask, 2)
-    w_mask = tf.nn.softmax(w_mask, axis=-1)
-
-    x_up = tf.image.resize(x, [h_, w_], method=tf.image.ResizeMethod.BILINEAR)
-    patches = tf.image.extract_patches(
-        images=x_up,
-        sizes=[1, k_up, k_up, 1],
-        strides=[1, 1, 1, 1],
-        rates=[1, scale, scale, 1],
-        padding='SAME',
-    )
-    patches = tf.reshape(patches, [-1, h_, w_, k_up * k_up, c])
-    x_out = tf.einsum('abcd,abcde->abce', w_mask, patches)
-    return x_out
-
-
-def upsample(x, weight_decay, reuse=True):
-    with tf.compat.v1.variable_scope('up_net'):
-        if reuse:
-            tf.compat.v1.get_variable_scope().reuse_variables()
-        for i in range(3):
-            x = carafe(x, weight_decay, i)
-        return x
+    The provided `models_ibp_sn22` checkpoint does not contain any `up_net`/CARAFE
+    variables, so upsampling must be parameter-free for full restoration.
+    """
+    target_hw = tf.shape(ref)[1:3]
+    return tf.image.resize(x, target_hw, method=tf.image.ResizeMethod.BILINEAR)
 
 
     def _resize_hw(image, new_h, new_w):
@@ -555,7 +488,7 @@ def Fusion(Z, Y, weight_decay, num_spectral=31, num_fm=64, reuse=True):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
-        lms = upsample(Y, weight_decay)
+        lms = upsample(Y, Z)
         Xin = tf.concat([lms, Z], axis=3)
 
         Xt = conv_sn(Xin, num_fm, weight_decay, scope='in')
@@ -635,6 +568,20 @@ def main():
     parser.add_argument('--num_images', type=int, default=12, help='Number of test samples to evaluate. Use 0 to auto-count.')
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     args = parser.parse_args()
+
+    global read_and_decode_test
+    if read_and_decode_test is None:
+        # Import the TFRecord reader for test data with a robust fallback
+        try:
+            from methods._DBIN.mat_convert_to_tfrecord_p_end import read_and_decode_test as _reader
+        except ModuleNotFoundError:
+            import importlib.util
+            reader_path = os.path.join(FILE_DIR, 'mat_convert_to_tfrecord_p_end.py')
+            spec = importlib.util.spec_from_file_location('mat_reader', reader_path)
+            mat_reader = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mat_reader)
+            _reader = mat_reader.read_and_decode_test
+        read_and_decode_test = _reader
 
     # Enable TF1 behavior under TF2 runtimes
     if tf.__version__.startswith('2'):
