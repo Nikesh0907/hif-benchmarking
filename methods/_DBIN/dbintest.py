@@ -11,9 +11,8 @@ Requirements:
 - TensorFlow 1.15.x (tf.contrib is used in the original code)
 - numpy, scipy, scikit-image, cv2 (OpenCV)
 
-Usage example:
-    python methods/_DBIN/dbintest.py \
-        --tfrecord methods/_DBIN/training_data/testp.tfrecords \
+Usage example (Kaggle):
+    python methods/_DBIN/dbintest.py /kaggle/input/<CAVE>/Data/Test/HSI \
         --model_dir methods/_DBIN/models_ibp_sn22 \
         --num_images 12
 """
@@ -57,6 +56,15 @@ def _bytes_feature(value):
 def _ensure_dir(path):
     if not os.path.isdir(path):
         os.makedirs(path, exist_ok=True)
+
+
+def _count_tfrecord_examples(path):
+    # Fast-enough for small test sets; avoids silent hangs when num_images > records.
+    try:
+        it = tf.compat.v1.io.tf_record_iterator(path)
+    except Exception:
+        it = tf.python_io.tf_record_iterator(path)
+    return sum(1 for _ in it)
 
 
 def _find_candidate_key(mdict, want_channels):
@@ -405,11 +413,18 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_
 
 def main():
     parser = argparse.ArgumentParser(description='Python-only DBIN evaluation')
-    parser.add_argument('data', type=str, help='Path to test TFRecord file OR a directory containing mat files (gt.mat, ms.mat, pan.mat, optional pan2/4, gt2/4, ms2)')
+    # Keep positional arg for backwards compatibility
+    parser.add_argument('data', nargs='?', default=None, type=str,
+                        help='Path to test TFRecord file OR a directory containing mat files')
+    # Also accept explicit flags (friendlier in notebooks)
+    parser.add_argument('--tfrecord', dest='tfrecord', type=str, default=None,
+                        help='Explicit TFRecord path (overrides positional data)')
+    parser.add_argument('--mat_dir', dest='mat_dir', type=str, default=None,
+                        help='Explicit MAT directory path (overrides positional data)')
     parser.add_argument('--model_dir', type=str, default=os.path.join('methods', '_DBIN', 'models_ibp_sn22'), help='Checkpoint directory (default: methods/_DBIN/models_ibp_sn22)')
     parser.add_argument('--batch_size', type=int, default=1)
     parser.add_argument('--image_size', type=int, default=512)
-    parser.add_argument('--num_images', type=int, default=12, help='Number of test samples to evaluate')
+    parser.add_argument('--num_images', type=int, default=12, help='Number of test samples to evaluate. Use 0 to auto-count.')
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     args = parser.parse_args()
 
@@ -417,7 +432,8 @@ def main():
     if tf.__version__.startswith('2'):
         tf.compat.v1.disable_eager_execution()
 
-    os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
+    # Kaggle often runs CPU-only; avoid CUDA init noise unless user explicitly wants GPU.
+    os.environ.setdefault('CUDA_VISIBLE_DEVICES', '')
 
     batch_size = args.batch_size
     image_size = args.image_size
@@ -430,8 +446,13 @@ def main():
     pan2_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 2, image_size // 2, 3])
     pan4_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 4, image_size // 4, 3])
 
-    # If "data" is a directory, auto-convert mats to a test TFRecord first
-    data_path = args.data
+    # Resolve input path precedence: --tfrecord / --mat_dir / positional
+    data_path = args.tfrecord or args.mat_dir or args.data
+    if not data_path:
+        raise SystemExit('Missing input: provide positional data path, or --tfrecord, or --mat_dir')
+
+    # If input is a directory, auto-convert mats to a test TFRecord first
+    wrote_count = None
     if os.path.isdir(data_path):
         out_dir = os.path.join('methods', '_DBIN', 'training_data')
         _ensure_dir(out_dir)
@@ -439,6 +460,15 @@ def main():
         print('Converting MATs in {} -> {}'.format(data_path, tfrecord_path))
         convert_mats_to_test_tfrecord(data_path, tfrecord_path)
         data_path = tfrecord_path
+
+        # If user requested auto-count, we can infer after conversion.
+        if args.num_images == 0:
+            wrote_count = _count_tfrecord_examples(data_path)
+            args.num_images = wrote_count
+            print('Auto-counted {} TFRecord samples'.format(args.num_images))
+    elif args.num_images == 0:
+        args.num_images = _count_tfrecord_examples(data_path)
+        print('Auto-counted {} TFRecord samples'.format(args.num_images))
 
     # Dataset pipeline (uses existing reader)
     pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch = read_and_decode_test(data_path, batch_size=batch_size)
@@ -454,7 +484,10 @@ def main():
     config = tf.compat.v1.ConfigProto()
     config.gpu_options.allow_growth = True
 
-    init = tf.compat.v1.global_variables_initializer()
+    init = tf.group(
+        tf.compat.v1.global_variables_initializer(),
+        tf.compat.v1.local_variables_initializer(),
+    )
     saver = tf.compat.v1.train.Saver()
 
     average_psnr = 0.0
@@ -469,7 +502,7 @@ def main():
         sess.run(init)
 
         coord = tf.compat.v1.train.Coordinator()
-        threads = tf.compat.v1.train.start_queue_runners(coord=coord)
+        threads = tf.compat.v1.train.start_queue_runners(sess=sess, coord=coord)
 
         # Restore checkpoint using exact-name intersection with checkpoint
         if tf.compat.v1.train.get_checkpoint_state(args.model_dir):
