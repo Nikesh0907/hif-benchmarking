@@ -187,7 +187,7 @@ def main():
 
             pan_np, gt_np, ms_np = sess.run([pan_b, gt_b, ms_b])
             _, l, step_val = sess.run(
-                [train_op, loss],
+                [train_op, loss, global_step],
                 feed_dict={pan_ph: pan_np, gt_ph: gt_np, ms_ph: ms_np, lr_ph: lr},
             )
 
