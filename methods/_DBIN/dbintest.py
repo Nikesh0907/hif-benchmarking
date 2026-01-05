@@ -114,11 +114,11 @@ def _load_mat(path, key, want_channels=None, allow_autodetect=False):
     raise KeyError('Key {} not found in {}. Available: {}'.format(key, path, list(m.keys())))
 
 
-def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
+def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
     """
-    Create a test-style TFRecord with features expected by read_and_decode_test:
-      pan_raw [512,512,3], pan2_raw [256,256,3], pan4_raw [128,128,3],
-      gt_raw [512,512,31], ms_raw [64,64,31], ms2_raw [128,128,31].
+        Create a test-style TFRecord with features expected by the test reader:
+            pan_raw [H,W,3], pan2_raw [H/2,W/2,3], pan4_raw [H/4,W/4,3],
+            gt_raw [H,W,31], ms_raw [H/sf,W/sf,31], ms2_raw [H/(sf/2),W/(sf/2),31].
 
     Supports two modes:
      1) Dataset-packed mats (gt.mat/ms.mat/pan.mat containing N samples)
@@ -128,6 +128,9 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
     a 3-channel proxy is synthesized from 'hsi' bands.
     """
     _ensure_dir(os.path.dirname(save_path))
+
+    if sf < 2 or (sf % 2) != 0:
+        raise ValueError('sf must be an even integer >= 2 (got {})'.format(sf))
 
     def ensure_4d(x):
         if x.ndim == 3:
@@ -207,14 +210,23 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
         N = gt.shape[0]
         for i in range(N):
             H, W = gt.shape[1], gt.shape[2]
+            if (H % sf) != 0 or (W % sf) != 0:
+                raise ValueError('GT size {}x{} not divisible by sf={}'.format(H, W, sf))
             # derive downsamples
             pan2 = resize_hw(pan[i], (W // 2, H // 2))
             pan4 = resize_hw(pan[i], (W // 4, H // 4))
             gt_full = gt[i]
             gt2 = resize_hw(gt_full, (W // 2, H // 2))
             gt4 = resize_hw(gt_full, (W // 4, H // 4))
-            ms_i = ms[i] if ms is not None else resize_hw(gt_full, (64, 64))
-            ms2 = resize_hw(ms_i, (128, 128))
+            ms_hw = (W // sf, H // sf)
+            ms2_hw = (W // (sf // 2), H // (sf // 2))
+            if ms is not None:
+                ms_i = ms[i]
+                if (ms_i.shape[0], ms_i.shape[1]) != (ms_hw[1], ms_hw[0]):
+                    ms_i = resize_hw(ms_i, ms_hw)
+            else:
+                ms_i = resize_hw(gt_full, ms_hw)
+            ms2 = resize_hw(ms_i, ms2_hw)
 
             # Safety: keep everything in [0,1]
             pan2 = _normalize01(pan2)
@@ -270,8 +282,10 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
                     pan4 = resize_hw(pan_i, (W // 4, H // 4))
                     gt2 = resize_hw(gt_i, (W // 2, H // 2))
                     gt4 = resize_hw(gt_i, (W // 4, H // 4))
-                    ms_i = downsample_hsi_to(gt_i, (64, 64))
-                    ms2 = resize_hw(ms_i, (128, 128))
+                    if (H % sf) != 0 or (W % sf) != 0:
+                        raise ValueError('GT size {}x{} not divisible by sf={}'.format(H, W, sf))
+                    ms_i = downsample_hsi_to(gt_i, (H // sf, W // sf))
+                    ms2 = resize_hw(ms_i, (W // (sf // 2), H // (sf // 2)))
 
                     pan2 = _normalize01(pan2)
                     pan4 = _normalize01(pan4)
@@ -307,8 +321,10 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
                 pan4 = resize_hw(pan, (W // 4, H // 4))
                 gt2 = resize_hw(gt, (W // 2, H // 2))
                 gt4 = resize_hw(gt, (W // 4, H // 4))
-                ms = downsample_hsi_to(gt, (64, 64))
-                ms2 = resize_hw(ms, (128, 128))
+                if (H % sf) != 0 or (W % sf) != 0:
+                    raise ValueError('GT size {}x{} not divisible by sf={}'.format(H, W, sf))
+                ms = downsample_hsi_to(gt, (H // sf, W // sf))
+                ms2 = resize_hw(ms, (W // (sf // 2), H // (sf // 2)))
 
                 pan2 = _normalize01(pan2)
                 pan4 = _normalize01(pan4)
@@ -333,8 +349,12 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None):
 
 
 def compute_ms_ssim(image1, image2):
-    image1 = np.reshape(image1, (512, 512, 31))
-    image2 = np.reshape(image2, (512, 512, 31))
+    image1 = np.asarray(image1)
+    image2 = np.asarray(image2)
+    if image1.ndim == 4:
+        image1 = image1[0]
+    if image2.ndim == 4:
+        image2 = image2[0]
     n = image1.shape[2]
     ms_ssim = 0.0
     for i in range(n):
@@ -345,8 +365,15 @@ def compute_ms_ssim(image1, image2):
 
 
 def compute_sam(image1, image2):
-    image1 = np.reshape(image1, (512 * 512, 31))
-    image2 = np.reshape(image2, (512 * 512, 31))
+    image1 = np.asarray(image1)
+    image2 = np.asarray(image2)
+    if image1.ndim == 4:
+        image1 = image1[0]
+    if image2.ndim == 4:
+        image2 = image2[0]
+    h, w, c = image1.shape
+    image1 = np.reshape(image1, (h * w, c))
+    image2 = np.reshape(image2, (h * w, c))
     mole = np.sum(np.multiply(image1, image2), axis=1)
     image1_norm = np.sqrt(np.sum(np.square(image1), axis=1))
     image2_norm = np.sqrt(np.sum(np.square(image2), axis=1))
@@ -355,13 +382,66 @@ def compute_sam(image1, image2):
     return np.mean(sam)
 
 
-def compute_ergas(mse, out):
-    out = np.reshape(out, (512 * 512, 31))
+def compute_ergas(mse, out, sf=8):
+    out = np.asarray(out)
+    if out.ndim == 4:
+        out = out[0]
+    h, w, c = out.shape
+    out = np.reshape(out, (h * w, c))
     out_mean = np.mean(out, axis=0)
-    mse = np.reshape(mse, (31, 1))
-    out_mean = np.reshape(out_mean, (31, 1))
-    ergas = 100 / 8 * np.sqrt(np.mean(mse / out_mean ** 2))
+    mse = np.reshape(mse, (c, 1))
+    out_mean = np.reshape(out_mean, (c, 1))
+    ergas = 100.0 / float(sf) * np.sqrt(np.mean(mse / (out_mean ** 2 + 1e-12)))
     return ergas
+
+
+def read_and_decode_test_sf(tfrecords_file, batch_size, image_size, sf):
+    """Read test TFRecord with parameterized shapes.
+
+    Keeps the original queue-based pipeline (TF1 style) for Kaggle/TF2 compat,
+    but avoids hard-coded 512/64/128 so we can vary `sf`.
+    """
+    if sf < 2 or (sf % 2) != 0:
+        raise ValueError('sf must be an even integer >= 2 (got {})'.format(sf))
+    ms_size = image_size // sf
+    ms2_size = image_size // (sf // 2)
+
+    filename_queue = tf.compat.v1.train.string_input_producer([tfrecords_file])
+    reader = tf.compat.v1.TFRecordReader()
+    _, serialized_example = reader.read(filename_queue)
+    img_features = tf.compat.v1.parse_single_example(
+        serialized_example,
+        features={
+            'pan_raw': tf.io.FixedLenFeature([], tf.string),
+            'pan2_raw': tf.io.FixedLenFeature([], tf.string),
+            'pan4_raw': tf.io.FixedLenFeature([], tf.string),
+            'gt_raw': tf.io.FixedLenFeature([], tf.string),
+            'ms_raw': tf.io.FixedLenFeature([], tf.string),
+            'ms2_raw': tf.io.FixedLenFeature([], tf.string),
+        },
+    )
+
+    pan = tf.io.decode_raw(img_features['pan_raw'], tf.float32)
+    pan = tf.reshape(pan, [image_size, image_size, 3])
+    pan2 = tf.io.decode_raw(img_features['pan2_raw'], tf.float32)
+    pan2 = tf.reshape(pan2, [image_size // 2, image_size // 2, 3])
+    pan4 = tf.io.decode_raw(img_features['pan4_raw'], tf.float32)
+    pan4 = tf.reshape(pan4, [image_size // 4, image_size // 4, 3])
+    gt = tf.io.decode_raw(img_features['gt_raw'], tf.float32)
+    gt = tf.reshape(gt, [image_size, image_size, 31])
+    ms = tf.io.decode_raw(img_features['ms_raw'], tf.float32)
+    ms = tf.reshape(ms, [ms_size, ms_size, 31])
+    ms2 = tf.io.decode_raw(img_features['ms2_raw'], tf.float32)
+    ms2 = tf.reshape(ms2, [ms2_size, ms2_size, 31])
+
+    pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch = tf.compat.v1.train.batch(
+        [pan, pan2, pan4, gt, ms, ms2],
+        batch_size=batch_size,
+        num_threads=4,
+        capacity=300,
+        allow_smaller_final_batch=False,
+    )
+    return pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch
 
 
 def _vsi():
@@ -512,7 +592,7 @@ def Fusion(Z, Y, weight_decay, num_spectral=31, num_fm=64, reuse=True):
         return X
 
 
-def boost_lap(X, Z_in, Y_in, weight_decay, num_spectral=31, num_fm=64, reuse=True):
+def boost_lap(X, Z_in, Y_in, weight_decay, num_spectral=31, num_fm=64, sf=8, reuse=True):
     with tf.compat.v1.variable_scope('recursive'):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
@@ -520,7 +600,10 @@ def boost_lap(X, Z_in, Y_in, weight_decay, num_spectral=31, num_fm=64, reuse=Tru
         Z = conv_sn(X, 3, weight_decay, scope='dz')
         Z = lrelu(Z)
 
-        Y = conv_sn(X, num_spectral, weight_decay, kernel=12, stride=8, scope='dy')
+        # Downsample by the scale factor. Original DBIN uses kernel=12, stride=8 for sf=8.
+        # Keep a similar receptive field by defaulting to kernel = sf + 4.
+        dy_kernel = int(sf) + 4
+        Y = conv_sn(X, num_spectral, weight_decay, kernel=dy_kernel, stride=int(sf), scope='dy')
         Y = lrelu(Y)
 
         dZ = Z_in - Z
@@ -531,7 +614,7 @@ def boost_lap(X, Z_in, Y_in, weight_decay, num_spectral=31, num_fm=64, reuse=Tru
         return X
 
 
-def fusion_net(Z, Y, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_decay=1e-5):
+def fusion_net(Z, Y, num_spectral=31, num_fm=64, num_ite=8, sf=8, reuse=False, weight_decay=1e-5):
     # Exact structure from methods/_DBIN/train_cave_edbin.py
     with tf.compat.v1.variable_scope('fusion_net'):
         if reuse:
@@ -541,7 +624,16 @@ def fusion_net(Z, Y, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_
         Xs = X
 
         for _ in range(num_ite):
-            X = boost_lap(X, Z, Y, weight_decay, num_spectral=num_spectral, num_fm=num_fm, reuse=True)
+            X = boost_lap(
+                X,
+                Z,
+                Y,
+                weight_decay,
+                num_spectral=num_spectral,
+                num_fm=num_fm,
+                sf=sf,
+                reuse=True,
+            )
             Xs = tf.concat([Xs, X], axis=3)
 
         # train_cave_edbin.py uses utils3.conv with scope='out_conv' and use_bias=False.
@@ -567,6 +659,7 @@ def main():
     parser.add_argument('--image_size', type=int, default=512)
     parser.add_argument('--num_images', type=int, default=12, help='Number of test samples to evaluate. Use 0 to auto-count.')
     parser.add_argument('--weight_decay', type=float, default=1e-5)
+    parser.add_argument('--sf', type=int, default=8, help='Scale factor between GT and MS (default: 8 for CAVE). Must be even.')
     args = parser.parse_args()
 
     global read_and_decode_test
@@ -593,10 +686,13 @@ def main():
     batch_size = args.batch_size
     image_size = args.image_size
     weight_decay = args.weight_decay
+    sf = args.sf
+    if sf < 2 or (sf % 2) != 0:
+        raise SystemExit('Invalid --sf {} (must be even and >=2)'.format(sf))
 
     # Placeholders
     gt_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size, image_size, 31])
-    ms_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 8, image_size // 8, 31])
+    ms_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // sf, image_size // sf, 31])
     pan_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size, image_size, 3])
     pan2_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 2, image_size // 2, 3])
     pan4_holder = tf.compat.v1.placeholder(dtype=tf.float32, shape=[batch_size, image_size // 4, image_size // 4, 3])
@@ -613,7 +709,7 @@ def main():
         _ensure_dir(out_dir)
         tfrecord_path = os.path.join(out_dir, 'autotest.tfrecords')
         print('Converting MATs in {} -> {}'.format(data_path, tfrecord_path))
-        convert_mats_to_test_tfrecord(data_path, tfrecord_path, rgb_dir=args.rgb_dir)
+        convert_mats_to_test_tfrecord(data_path, tfrecord_path, rgb_dir=args.rgb_dir, sf=sf)
         data_path = tfrecord_path
 
         # If user requested auto-count, we can infer after conversion.
@@ -625,11 +721,22 @@ def main():
         args.num_images = _count_tfrecord_examples(data_path)
         print('Auto-counted {} TFRecord samples'.format(args.num_images))
 
-    # Dataset pipeline (uses existing reader)
-    pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch = read_and_decode_test(data_path, batch_size=batch_size)
+    # Dataset pipeline
+    pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch = read_and_decode_test_sf(
+        data_path, batch_size=batch_size, image_size=image_size, sf=sf
+    )
 
     # Build model
-    X = fusion_net(pan_holder, ms_holder, num_spectral=31, num_fm=64, num_ite=8, reuse=False, weight_decay=weight_decay)
+    X = fusion_net(
+        pan_holder,
+        ms_holder,
+        num_spectral=31,
+        num_fm=64,
+        num_ite=8,
+        sf=sf,
+        reuse=False,
+        weight_decay=weight_decay,
+    )
     output = tf.clip_by_value(X, 0.0, 1.0)
 
     mse = tf.square(output - gt_holder)
@@ -711,7 +818,7 @@ def main():
             ms_psnr = np.mean(10 * np.log10(1.0 / mse_loss))
             temp_ssim = compute_ms_ssim(out, gt)
             temp_sam = compute_sam(out, gt)
-            temp_ergas = compute_ergas(mse_loss, out)
+            temp_ergas = compute_ergas(mse_loss, out, sf=sf)
 
             print(
                 'image{} temp_psnr: {:.4f}, temp_ssim: {:.4f}, temp_sam: {:.4f}, temp_ergas: {:.4f}'.format(
