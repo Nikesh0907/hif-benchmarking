@@ -58,6 +58,29 @@ def _ensure_dir(path):
         os.makedirs(path, exist_ok=True)
 
 
+def _normalize01(x):
+    """Best-effort normalization to [0,1] matching common HSI conventions.
+
+    DBIN/EDBIN training/eval expects inputs in [0,1]. Many public CAVE/HSI mats
+    are stored as uint16 or floats in 0..255/4095/65535.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    mx = float(np.nanmax(x)) if x.size else 0.0
+    if mx <= 1.0:
+        return np.clip(x, 0.0, 1.0)
+    # Heuristics for common ranges
+    if mx <= 255.0:
+        denom = 255.0
+    elif mx <= 4095.0:
+        denom = 4095.0
+    elif mx <= 65535.0:
+        denom = 65535.0
+    else:
+        denom = mx
+    x = x / denom
+    return np.clip(x, 0.0, 1.0)
+
+
 def _count_tfrecord_examples(path):
     # Fast-enough for small test sets; avoids silent hangs when num_images > records.
     try:
@@ -142,13 +165,13 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
         ms = _load_mat(ms_path, 'ms', want_channels=31, allow_autodetect=True) if os.path.isfile(ms_path) else None
         pan = _load_mat(pan_path, 'pan', want_channels=3, allow_autodetect=True) if os.path.isfile(pan_path) else None
 
-        gt = ensure_4d(gt)
-        ms = ensure_4d(ms) if ms is not None else None
+        gt = ensure_4d(_normalize01(gt))
+        ms = ensure_4d(_normalize01(ms)) if ms is not None else None
         if pan is None:
             # synthesize RGB from gt bands
             idx_b, idx_g, idx_r = 7, 15, 23
             pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
-        pan = ensure_4d(pan)
+        pan = ensure_4d(_normalize01(pan))
 
         N = gt.shape[0]
         for i in range(N):
@@ -161,6 +184,14 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
             gt4 = resize_hw(gt_full, (W // 4, H // 4))
             ms_i = ms[i] if ms is not None else resize_hw(gt_full, (64, 64))
             ms2 = resize_hw(ms_i, (128, 128))
+
+            # Safety: keep everything in [0,1]
+            pan2 = _normalize01(pan2)
+            pan4 = _normalize01(pan4)
+            gt2 = _normalize01(gt2)
+            gt4 = _normalize01(gt4)
+            ms_i = _normalize01(ms_i)
+            ms2 = _normalize01(ms2)
 
             example = tf.train.Example(features=tf.train.Features(feature={
                 'pan_raw': _bytes_feature(pan[i].tobytes()),
@@ -183,11 +214,11 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
             if gt_key is None:
                 # skip files without a valid HSI
                 continue
-            gt = np.array(m[gt_key], dtype=np.float32)
+            gt = _normalize01(np.array(m[gt_key], dtype=np.float32))
             if gt.ndim == 4:
                 # handle packed samples inside one file
                 for i in range(gt.shape[0]):
-                    gt_i = gt[i]
+                    gt_i = _normalize01(gt[i])
                     H, W = gt_i.shape[0], gt_i.shape[1]
                     # PAN candidate (3+ channels)
                     pan_key = None
@@ -195,10 +226,11 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                         if pk in m:
                             pan_key = pk
                             break
-                    pan_i = np.array(m[pan_key][i], dtype=np.float32) if pan_key else None
+                    pan_i = _normalize01(np.array(m[pan_key][i], dtype=np.float32)) if pan_key else None
                     if pan_i is None:
                         idx_b, idx_g, idx_r = 7, 15, 23
                         pan_i = np.stack([gt_i[..., idx_b], gt_i[..., idx_g], gt_i[..., idx_r]], axis=-1)
+                        pan_i = _normalize01(pan_i)
 
                     pan2 = resize_hw(pan_i, (W // 2, H // 2))
                     pan4 = resize_hw(pan_i, (W // 4, H // 4))
@@ -206,6 +238,11 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                     gt4 = resize_hw(gt_i, (W // 4, H // 4))
                     ms_i = resize_hw(gt_i, (64, 64))
                     ms2 = resize_hw(ms_i, (128, 128))
+
+                    pan2 = _normalize01(pan2)
+                    pan4 = _normalize01(pan4)
+                    ms_i = _normalize01(ms_i)
+                    ms2 = _normalize01(ms2)
 
                     example = tf.train.Example(features=tf.train.Features(feature={
                         'pan_raw': _bytes_feature(pan_i.tobytes()),
@@ -225,10 +262,11 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                     if pk in m:
                         pan_key = pk
                         break
-                pan = np.array(m[pan_key], dtype=np.float32) if pan_key else None
+                pan = _normalize01(np.array(m[pan_key], dtype=np.float32)) if pan_key else None
                 if pan is None:
                     idx_b, idx_g, idx_r = 7, 15, 23
                     pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
+                    pan = _normalize01(pan)
 
                 pan2 = resize_hw(pan, (W // 2, H // 2))
                 pan4 = resize_hw(pan, (W // 4, H // 4))
@@ -236,6 +274,11 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path):
                 gt4 = resize_hw(gt, (W // 4, H // 4))
                 ms = resize_hw(gt, (64, 64))
                 ms2 = resize_hw(ms, (128, 128))
+
+                pan2 = _normalize01(pan2)
+                pan4 = _normalize01(pan4)
+                ms = _normalize01(ms)
+                ms2 = _normalize01(ms2)
 
                 example = tf.train.Example(features=tf.train.Features(feature={
                     'pan_raw': _bytes_feature(pan.tobytes()),
@@ -348,11 +391,13 @@ def Fusion(Z, Y, num_spectral=31, num_fm=128, reuse=True, weight_decay=2e-5):
         if reuse:
             tf.compat.v1.get_variable_scope().reuse_variables()
 
-        # Note: EDBIN uses a carafe upsample under scope 'up_net'. Our TF-only
-        # script approximates it via a single deconv named 'lms'. These vars
-        # may not exist in the EDBIN checkpoint and will remain randomly init.
-        lms = _conv2d_transpose(Y, num_outputs=num_spectral, kernel_size=12, stride=8,
-                    activation_fn=None, scope='lms', weight_decay=weight_decay)
+        # EDBIN upsamples MS via a learned "up_net" (CARAFE). Those weights are
+        # present in the checkpoint under different scopes than our earlier TF-only
+        # deconv approximation. To avoid random, non-restored weights ruining output,
+        # use deterministic bilinear upsampling to match Z spatial size.
+        target_h = tf.shape(Z)[1]
+        target_w = tf.shape(Z)[2]
+        lms = tf.image.resize(Y, [target_h, target_w], method=tf.image.ResizeMethod.BILINEAR)
 
         Xin = tf.concat([lms, Z], axis=3)
         Xt = _conv2d(Xin, num_outputs=num_fm, kernel_size=3, stride=1,
