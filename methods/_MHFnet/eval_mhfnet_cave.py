@@ -128,7 +128,11 @@ class Item:
 
 
 def load_test_names_from_list(split_list_path: str, all_names_sorted: list[str]) -> list[str]:
-    """Use CMHF-net's CAVEdata/List Ind to pick the 12 test scene names.
+    """Use CMHF-net's CAVEdata/List Ind to pick test scene names.
+
+    For 32 scenes: uses the last 12 (indices 20:32, standard CAVE split).
+    For 20 scenes: uses the last 12 (indices 8:20).
+    For N scenes: uses the last 12 (or fewer if N < 12).
 
     NOTE: Ind indexes depend on file ordering in the original MATLAB/Python code.
     We use sorted filenames for determinism.
@@ -137,10 +141,11 @@ def load_test_names_from_list(split_list_path: str, all_names_sorted: list[str])
     if "Ind" not in mat:
         raise KeyError(f"Missing 'Ind' in {split_list_path}")
     ind = mat["Ind"].reshape(-1).astype(int)
-    if ind.size < 32:
-        raise ValueError(f"Expected 32 indices in Ind, got {ind.size}")
+    n_total = ind.size
 
-    test_idx = ind[20:32] - 1  # 1-based -> 0-based
+    # Use the last 12 indices (or fewer if less than 12 total).
+    n_test = min(12, n_total)
+    test_idx = ind[n_total - n_test:n_total] - 1  # 1-based -> 0-based
     out: list[str] = []
     for i in test_idx:
         if i < 0 or i >= len(all_names_sorted):
@@ -149,6 +154,7 @@ def load_test_names_from_list(split_list_path: str, all_names_sorted: list[str])
                 f"Your GT folder and List file may not match."
             )
         out.append(all_names_sorted[i])
+    print(f"[eval] Using {len(out)} test scenes (last {len(out)} of {n_total} total)")
     return out
 
 
