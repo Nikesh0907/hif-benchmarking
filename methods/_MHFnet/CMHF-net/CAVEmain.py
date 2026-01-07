@@ -133,7 +133,7 @@ def train():
                 
     X       = tf.placeholder(tf.float32, shape=(None, FLAGS.image_size, FLAGS.image_size, FLAGS.outDim))  # HrHS (None,96,96,31)
     Y       = tf.placeholder(tf.float32, shape=(None, FLAGS.image_size, FLAGS.image_size, 3))  # HrMS (None,96,96,3)
-    Z       = tf.placeholder(tf.float32, shape=(None, FLAGS.image_size/32, FLAGS.image_size/32, FLAGS.outDim)) # LrHS (None,3,3,31)
+    Z       = tf.placeholder(tf.float32, shape=(None, FLAGS.image_size//32, FLAGS.image_size//32, FLAGS.outDim)) # LrHS (None,3,3,31)
 
     outX, ListX, YA, E, HY  = MHFnet.HSInet(Y, Z, iniUp3x3,iniA,FLAGS.upRank,FLAGS.outDim,FLAGS.HSInetL,FLAGS.subnetL)
     
@@ -247,7 +247,7 @@ def testAll():
     iniA         = 0 
     iniUp3x3     = 0
     Y       = tf.placeholder(tf.float32, shape=(1, 512, 512, 3))  # supervised data (None,64,64,3)
-    Z       = tf.placeholder(tf.float32, shape=(1, 512/32, 512/32, FLAGS.outDim))
+    Z       = tf.placeholder(tf.float32, shape=(1, 512//32, 512//32, FLAGS.outDim))
     outX, X1, YA, _, HY = MHFnet.HSInet(Y, Z, iniUp3x3,iniA,FLAGS.upRank,FLAGS.outDim,FLAGS.HSInetL,FLAGS.subnetL)
 
     config = tf.ConfigProto(allow_soft_placement=True,log_device_placement=True)
