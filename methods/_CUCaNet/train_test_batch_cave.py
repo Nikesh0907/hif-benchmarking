@@ -159,22 +159,21 @@ def main():
     
     print(f"Found {len(train_mats)} training files and {len(test_mats)} test files")
     
-    # Setup training options (build minimal sys.argv to avoid argparse issues)
+    # Setup training options (use minimal sys.argv, then override)
     import sys as _sys
     old_argv = _sys.argv.copy()
-    _sys.argv = [
-        _sys.argv[0],
-        '--data_name', 'CAVE',
-        '--srf_name', args.srf_name,
-        '--scale_factor', str(args.scale_factor),
-        '--niter', str(args.niter),
-        '--niter_decay', str(args.niter_decay),
-        '--lr', str(args.lr),
-        '--batchsize', str(args.batchsize),
-    ]
+    _sys.argv = [_sys.argv[0]]
     train_opt = TrainOptions().parse()
     _sys.argv = old_argv
     
+    # Override with user args
+    train_opt.data_name = "CAVE"
+    train_opt.srf_name = args.srf_name
+    train_opt.scale_factor = args.scale_factor
+    train_opt.niter = args.niter
+    train_opt.niter_decay = args.niter_decay
+    train_opt.lr = args.lr
+    train_opt.batchsize = args.batchsize
     train_opt.print_freq = max(1, train_opt.niter // 10)
     train_opt.save_freq = max(1, train_opt.niter // 5)
     train_opt.checkpoints_dir = "./checkpoints"
