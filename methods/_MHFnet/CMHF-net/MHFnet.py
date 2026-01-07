@@ -288,7 +288,8 @@ def MyconvB( name, x, in_filters, out_filters, strides):
 
 def create_kernel(name, shape, initializer=tf.truncated_normal_initializer(mean = 0, stddev = 0.1)):
 #def create_kernel(name, shape, initializer=tf.contrib.layers.xavier_initializer()):
-    regularizer = tf.contrib.layers.l2_regularizer(scale = 1e-10)
+    # tf.contrib is removed in TF2; use a compatible L2 regularizer.
+    regularizer = tf.keras.regularizers.l2(1e-10)
 
     new_variables = tf.get_variable(name=name, shape=shape, initializer=initializer,
                                     regularizer=regularizer, trainable=True)
