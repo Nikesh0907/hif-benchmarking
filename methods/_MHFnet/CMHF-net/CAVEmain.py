@@ -252,7 +252,7 @@ def testAll():
     Z       = tf.placeholder(tf.float32, shape=(1, 512//32, 512//32, FLAGS.outDim))
     outX, X1, YA, _, HY = MHFnet.HSInet(Y, Z, iniUp3x3,iniA,FLAGS.upRank,FLAGS.outDim,FLAGS.HSInetL,FLAGS.subnetL)
 
-    config = tf.ConfigProto(allow_soft_placement=True,log_device_placement=True)
+    config = tf.ConfigProto(allow_soft_placement=True,log_device_placement=False)
     config.gpu_options.allow_growth = True
     saver = tf.train.Saver(max_to_keep = 5)
     save_path = FLAGS.train_dir
@@ -260,18 +260,32 @@ def testAll():
     with tf.Session(config=config) as sess:        
         ckpt = tf.train.latest_checkpoint(save_path)
         saver.restore(sess, ckpt) 
-        for root, dirs, files in os.walk('CAVEdata/X/'):
-            for i in range(32):       
-                data = sio.loadmat("CAVEdata/Y/"+files[i])
-                inY  = data['RGB']
-                inY  = np.expand_dims(inY, axis = 0)
-                data = sio.loadmat("CAVEdata/Z/"+files[i])
-                inZ  = data['Zmsi']
-                inZ  = np.expand_dims(inZ, axis = 0)
-                pred_X,ListX,pred_HY,pred_YA = sess.run([outX, X1, HY, YA],feed_dict={Y:inY,Z:inZ})  
-                pred_Lr = ListX[FLAGS.HSInetL-2]
-                sio.savemat(FLAGS.test_dir+files[i], {'outX': pred_X,'outLR': pred_Lr,'outHY': pred_HY, 'outYA':pred_YA})     
-                print(files[i] + ' done!')
+        x_dir = 'CAVEdata/X/'
+        y_dir = 'CAVEdata/Y/'
+        z_dir = 'CAVEdata/Z/'
+        files = sorted([f for f in os.listdir(x_dir) if f.endswith('.mat')])
+        if not files:
+            raise RuntimeError('No .mat files found under ' + x_dir + '. Did you prepare CAVEdata/* first?')
+
+        for fname in files:
+            y_path = os.path.join(y_dir, fname)
+            z_path = os.path.join(z_dir, fname)
+            if (not os.path.exists(y_path)) or (not os.path.exists(z_path)):
+                print('Skipping ' + fname + ' because matching Y/Z is missing.')
+                continue
+
+            data = sio.loadmat(y_path)
+            inY = data['RGB']
+            inY = np.expand_dims(inY, axis=0)
+
+            data = sio.loadmat(z_path)
+            inZ = data['Zmsi']
+            inZ = np.expand_dims(inZ, axis=0)
+
+            pred_X, ListX, pred_HY, pred_YA = sess.run([outX, X1, HY, YA], feed_dict={Y: inY, Z: inZ})
+            pred_Lr = ListX[FLAGS.HSInetL - 2]
+            sio.savemat(FLAGS.test_dir + fname, {'outX': pred_X, 'outLR': pred_Lr, 'outHY': pred_HY, 'outYA': pred_YA})
+            print(fname + ' done!')
 
 
 if __name__ == '__main__':
