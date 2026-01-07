@@ -4,7 +4,9 @@ Created on Fri Jul 20 23:05:10 2018
 The MHF-net
 @author: XieQi
 """
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+
+tf.disable_v2_behavior()
      
 # main MHF-net net
 def HSInet(Y,Z, iniUp3x3,iniA,upRank,outDim,HSInetL,subnetL,ratio=32):
