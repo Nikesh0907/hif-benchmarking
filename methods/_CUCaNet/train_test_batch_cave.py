@@ -17,6 +17,7 @@ import os
 import sys
 import glob
 import time
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -40,12 +41,25 @@ def setup_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 
-def train_and_test_single(train_mat_path, test_mat_paths, train_opt):
+def train_and_test_single(train_mat_path, test_mat_paths, train_opt, cave_dir="./CAVE"):
     """Train CUCaNet on a single HSI file and test on multiple HSIs."""
     mat_name = Path(train_mat_path).stem
     print(f"\n{'='*80}")
     print(f"Training on: {mat_name}")
     print(f"{'='*80}")
+    
+    # Copy training file to CAVE folder (CUCaNet expects it there)
+    os.makedirs(cave_dir, exist_ok=True)
+    cave_mat_path = os.path.join(cave_dir, mat_name + ".mat")
+    print(f"Copying {train_mat_path} to {cave_mat_path}")
+    shutil.copy(train_mat_path, cave_mat_path)
+    
+    # Ensure the mat file has key 'img' (rename 'hsi' if needed)
+    mat_data = sio.loadmat(cave_mat_path)
+    if 'img' not in mat_data and 'hsi' in mat_data:
+        mat_data['img'] = mat_data.pop('hsi')
+        sio.savemat(cave_mat_path, mat_data)
+        print(f"Renamed 'hsi' key to 'img' in {cave_mat_path}")
     
     train_opt.name = f"CAVE_{mat_name}"
     train_opt.mat_name = mat_name
@@ -183,7 +197,7 @@ def main():
     all_results = {}
     for i, train_mat in enumerate(train_mats, start=1):
         print(f"\n[{i}/{len(train_mats)}]")
-        results = train_and_test_single(train_mat, test_mats, train_opt)
+        results = train_and_test_single(train_mat, test_mats, train_opt, cave_dir="./CAVE")
         all_results[Path(train_mat).stem] = results
     
     print(f"\n{'='*80}")
