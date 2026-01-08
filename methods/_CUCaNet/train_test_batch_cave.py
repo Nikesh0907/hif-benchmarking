@@ -20,6 +20,7 @@ import shutil
 import time
 from pathlib import Path
 import copy
+import re
 
 import numpy as np
 import scipy.io as sio
@@ -145,8 +146,64 @@ def stage_split(train_mats, test_mats, cave_dir="./CAVE"):
         _copy_and_fix_mats(test_mats, cave_test_dir)
 
 
-def train_multi_scene(train_opt, cave_dir="./CAVE"):
-    """Train on ALL scenes under CAVE/train/*.mat and save checkpoints."""
+def _resolve_resume(resume_from, default_checkpoints_dir, default_exp_name):
+    """Resolve resume source.
+
+    Returns (checkpoints_dir, exp_name, which_epoch, start_epoch).
+    - checkpoints_dir/exp_name define where to load from.
+    - which_epoch is the tag passed to load_networks().
+    - start_epoch is the epoch number to begin training loop with.
+
+    resume_from can be:
+    - a directory: .../checkpoints/<exp_name>
+    - a .pth file inside that directory: .../checkpoints/<exp_name>/epoch_20_net_*.pth
+    - a tag like 'best' or 'epoch_20' (uses default checkpoints_dir/exp_name)
+    """
+    if resume_from is None:
+        return default_checkpoints_dir, default_exp_name, None, 1
+
+    resume_from = str(resume_from).strip()
+    if resume_from == "":
+        return default_checkpoints_dir, default_exp_name, None, 1
+
+    # Case 1: tag only
+    if not os.path.exists(resume_from):
+        which_epoch = resume_from
+        start_epoch = 1
+        m = re.match(r"^epoch_(\d+)$", which_epoch)
+        if m:
+            start_epoch = int(m.group(1)) + 1
+        return default_checkpoints_dir, default_exp_name, which_epoch, start_epoch
+
+    # Case 2: path exists
+    if os.path.isfile(resume_from):
+        filename = os.path.basename(resume_from)
+        if "_net_" not in filename or not filename.endswith(".pth"):
+            raise SystemExit(f"resume_from file does not look like a CUCaNet checkpoint: {resume_from}")
+        which_epoch = filename.split("_net_")[0]
+        exp_dir = os.path.dirname(resume_from)
+    else:
+        exp_dir = resume_from
+        # If user passed .../checkpoints/<exp>, default to 'latest' if present else 'best'
+        which_epoch = "latest" if glob.glob(os.path.join(exp_dir, "latest_net_*.pth")) else "best"
+
+    exp_name = os.path.basename(os.path.abspath(exp_dir))
+    checkpoints_dir = os.path.dirname(os.path.abspath(exp_dir))
+
+    start_epoch = 1
+    m = re.match(r"^epoch_(\d+)$", which_epoch)
+    if m:
+        start_epoch = int(m.group(1)) + 1
+
+    return checkpoints_dir, exp_name, which_epoch, start_epoch
+
+
+def train_multi_scene(train_opt, cave_dir="./CAVE", resume_from=None):
+    """Train on ALL scenes under CAVE/train/*.mat and save checkpoints.
+
+    Note: this resumes *weights* only (CUCaNet saves net_*.pth). Optimizer/scheduler
+    state is not persisted by the original code, so LR schedule restarts.
+    """
     cave_dir = os.path.abspath(cave_dir)
     checkpoint_dir = os.path.join(train_opt.checkpoints_dir, train_opt.name)
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -166,13 +223,31 @@ def train_multi_scene(train_opt, cave_dir="./CAVE"):
                                train_dataloader.sp_range)
     train_model.setup(train_opt)
 
+    # Optionally resume from checkpoint weights
+    if resume_from is not None:
+        ckpt_dir, exp_name, which_epoch, start_epoch = _resolve_resume(
+            resume_from,
+            default_checkpoints_dir=train_opt.checkpoints_dir,
+            default_exp_name=train_opt.name,
+        )
+        # Update save/load location if user pointed somewhere else
+        train_opt.checkpoints_dir = ckpt_dir
+        train_opt.name = exp_name
+        train_model.save_dir = os.path.join(train_opt.checkpoints_dir, train_opt.name)
+        os.makedirs(train_model.save_dir, exist_ok=True)
+
+        print(f"Resuming weights from: {os.path.join(train_opt.checkpoints_dir, train_opt.name)} (tag={which_epoch})")
+        train_model.load_networks(str(which_epoch))
+    else:
+        start_epoch = 1
+
     total_epochs = int(train_opt.niter + train_opt.niter_decay)
     print(f"Training for {total_epochs} epochs...")
 
     best_psnr = -1e9
     best_epoch = None
 
-    epoch_iterable = range(1, total_epochs + 1)
+    epoch_iterable = range(int(start_epoch), total_epochs + 1)
     if tqdm is not None:
         epoch_iterable = tqdm(epoch_iterable, desc="Train epochs", leave=True)
 
@@ -310,6 +385,7 @@ def main():
     ap.add_argument("--save_every", type=int, default=20, help="Save checkpoint every N epochs")
     ap.add_argument("--which_epoch", type=str, default="best", help="Checkpoint tag to load for eval: best or epoch_XX")
     ap.add_argument("--exp_name", type=str, default="CAVE_20train", help="Experiment folder name under checkpoints")
+    ap.add_argument("--resume_from", type=str, default=None, help="Resume training from checkpoint tag, folder, or .pth path")
     ap.add_argument("--max_train", type=int, default=999, help="Max number of training files to use")
     ap.add_argument("--max_test", type=int, default=999, help="Max number of test files to use")
     args = ap.parse_args()
@@ -392,7 +468,7 @@ def main():
             raise SystemExit("No staged test mats found under ./CAVE/test/*.mat")
 
     if args.mode in ("train", "train_eval"):
-        train_multi_scene(train_opt, cave_dir="./CAVE")
+        train_multi_scene(train_opt, cave_dir="./CAVE", resume_from=args.resume_from)
 
     if args.mode in ("eval", "train_eval"):
         eval_opt = copy.deepcopy(train_opt)
