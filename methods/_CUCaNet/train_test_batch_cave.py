@@ -17,12 +17,18 @@ import os
 import sys
 import glob
 import shutil
+import time
 from pathlib import Path
 import copy
 
 import numpy as np
 import scipy.io as sio
 import torch
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    tqdm = None
 
 # Add CUCaNet to path
 cucadir = os.path.dirname(os.path.abspath(__file__))
@@ -166,16 +172,32 @@ def train_multi_scene(train_opt, cave_dir="./CAVE"):
     best_psnr = -1e9
     best_epoch = None
 
-    for epoch in range(1, total_epochs + 1):
+    epoch_iterable = range(1, total_epochs + 1)
+    if tqdm is not None:
+        epoch_iterable = tqdm(epoch_iterable, desc="Train epochs", leave=True)
+
+    for epoch in epoch_iterable:
+        epoch_t0 = time.time()
         epoch_psnrs = []
-        for _, data in enumerate(train_dataloader):
+        data_iterable = train_dataloader
+        if tqdm is not None:
+            data_iterable = tqdm(train_dataloader, desc=f"Epoch {epoch}/{total_epochs} scenes", leave=False)
+
+        for _, data in enumerate(data_iterable):
             train_model.set_input(data, True)
             train_model.optimize_joint_parameters(epoch)
             epoch_psnrs.append(train_model.cal_psnr())
 
         avg_psnr = float(np.mean(epoch_psnrs)) if epoch_psnrs else float('nan')
+        epoch_secs = time.time() - epoch_t0
+        secs_per_scene = epoch_secs / max(1, dataset_size)
+        if tqdm is not None and hasattr(epoch_iterable, 'set_postfix'):
+            try:
+                epoch_iterable.set_postfix(psnr=f"{avg_psnr:.3f}", sec=f"{epoch_secs:.1f}")
+            except Exception:
+                pass
         if epoch % train_opt.print_freq == 0 or epoch == 1 or epoch == total_epochs:
-            print(f"Epoch {epoch}/{total_epochs}, avg train PSNR: {avg_psnr:.4f}")
+            print(f"Epoch {epoch}/{total_epochs}, avg train PSNR: {avg_psnr:.4f} | time: {epoch_secs:.1f}s ({secs_per_scene:.2f}s/scene)")
 
         # Save periodic checkpoints
         if train_opt.save_epoch_freq and (epoch % int(train_opt.save_epoch_freq) == 0):
@@ -220,7 +242,11 @@ def eval_multi_scene(eval_opt, which_epoch, cave_dir="./CAVE"):
     eval_model.eval()
 
     metric_rows = []
-    for _, data in enumerate(test_dataloader):
+    data_iterable = test_dataloader
+    if tqdm is not None:
+        data_iterable = tqdm(test_dataloader, desc=f"Eval scenes ({which_epoch})", leave=True)
+
+    for _, data in enumerate(data_iterable):
         scene_name = _parse_scene_name(data['name'])
         print(f"  Testing {scene_name}...", end=" ")
 
@@ -273,6 +299,7 @@ def main():
     ap.add_argument("--mode", choices=["train", "eval", "train_eval"], default="train_eval")
     ap.add_argument("--train_dir", default=None, help="Directory with training HSI .mat files (needed for train/train_eval unless already staged)")
     ap.add_argument("--test_dir", default=None, help="Directory with test HSI .mat files (optional; eval can use already-staged ./CAVE/test)")
+    ap.add_argument("--gpu_ids", type=str, default=None, help="GPU ids, e.g. '0' or '0,1'. Use '-1' for CPU")
     ap.add_argument("--srf_name", default="Nikon_D700_Qu", help="Spectral response function name")
     ap.add_argument("--scale_factor", type=int, default=32, help="Scale factor")
     ap.add_argument("--epochs", type=int, default=None, help="Total training epochs (sets niter=epochs, niter_decay=0)")
@@ -326,6 +353,18 @@ def main():
         train_opt.niter_decay = args.niter_decay
     train_opt.lr = args.lr
     train_opt.batchsize = args.batchsize
+
+    # GPU selection: TrainOptions().parse() already converted gpu_ids into a list.
+    # Here we allow overriding from this script so Kaggle notebooks can pass it.
+    if args.gpu_ids is not None:
+        s = str(args.gpu_ids).strip()
+        if s == "-1":
+            train_opt.gpu_ids = []
+        else:
+            train_opt.gpu_ids = [int(x) for x in s.split(',') if str(x).strip() != ""]
+            if train_opt.gpu_ids and torch.cuda.is_available():
+                torch.cuda.set_device(train_opt.gpu_ids[0])
+        print(f"Using gpu_ids={train_opt.gpu_ids if train_opt.gpu_ids else 'CPU'}")
     total_epochs = train_opt.niter + train_opt.niter_decay
     train_opt.print_freq = max(1, total_epochs // 10)
     train_opt.save_epoch_freq = int(args.save_every)

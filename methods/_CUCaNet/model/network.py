@@ -8,7 +8,8 @@ def get_scheduler(optimizer, opt):
     if opt.lr_policy == 'lambda':
         def lambda_rule(epoch):
             lr_l = 1.0 - max(0, epoch + 1 + opt.epoch_count - opt.niter) / float(opt.niter_decay + 1)
-            return lr_l
+            # Guard against negative LR multipliers (can happen with odd epoch_count defaults).
+            return max(0.0, float(lr_l))
         scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
     elif opt.lr_policy == 'step':
         scheduler = lr_scheduler.StepLR(optimizer, step_size=opt.lr_decay_iters, gamma=opt.lr_decay_gamma)
@@ -78,8 +79,8 @@ class SumToOneLoss(nn.Module):
         return loss
 
 def kl_divergence(p, q):
-    p = F.softmax(p)
-    q = F.softmax(q)
+    p = F.softmax(p, dim=1)
+    q = F.softmax(q, dim=1)
     s1 = torch.sum(p * torch.log(p / q))
     s2 = torch.sum((1 - p) * torch.log((1 - p) / (1 - q)))
     
