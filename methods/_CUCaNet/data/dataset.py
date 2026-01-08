@@ -20,16 +20,31 @@ class Dataset(data.Dataset):
 
         default_datapath = os.getcwd()
         data_folder = os.path.join(default_datapath, args.data_name)
-        if os.path.exists(data_folder):
-            for root, dirs, files in os.walk(data_folder):
-                if args.mat_name in files:
-                    raise Exception("HSI data path does not exist!")
-                else:
-                    data_path = os.path.join(data_folder, args.mat_name+'.mat')
-        else:
-            return 0
+        if not os.path.isdir(data_folder):
+            raise Exception("HSI data path does not exist!")
 
-        self.imgpath_list = sorted(glob.glob(data_path))
+        mat_name = getattr(args, 'mat_name', None)
+        if mat_name is None or str(mat_name).strip() == "":
+            raise Exception("mat_name is empty; please set args.mat_name")
+
+        mat_name = str(mat_name)
+        # Support:
+        # - single stem: 'balloons' -> <data_folder>/balloons.mat
+        # - glob pattern: 'train/*.mat' or '*.mat'
+        # - directory: 'train' or '/abs/path/to/train'
+        if os.path.isabs(mat_name) or os.path.sep in mat_name or mat_name.endswith('.mat') or ('*' in mat_name) or ('?' in mat_name) or ('[' in mat_name):
+            pattern = mat_name
+            if not os.path.isabs(pattern):
+                pattern = os.path.join(data_folder, pattern)
+            if os.path.isdir(pattern):
+                pattern = os.path.join(pattern, '*.mat')
+            self.imgpath_list = sorted(glob.glob(pattern))
+        else:
+            self.imgpath_list = sorted(glob.glob(os.path.join(data_folder, mat_name + '.mat')))
+
+        if len(self.imgpath_list) == 0:
+            raise Exception(f"No .mat files matched mat_name='{mat_name}' under '{data_folder}'")
+
         self.img_list = []
         for i in range(len(self.imgpath_list)):
             self.img_list.append(io.loadmat(self.imgpath_list[i])['img'])

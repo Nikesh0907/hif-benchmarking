@@ -122,6 +122,13 @@ class CUNets(BaseModel):
         self.image_name = input['name']
         self.real_input = input
 
+    def forward(self):
+        # During inference, BaseModel.test() calls forward(); the original
+        # CUCaNet release uses `my_forward()` inside the training step.
+        # We expose it here so `test()` produces reconstructions.
+        self.visual_names = ['real_lhsi', 'rec_lr_lr', 'real_hmsi', 'rec_msi_msi', 'real_hhsi', 'rec_msi_hr']
+        self.my_forward()
+
     def my_forward(self):
         # LrHSI, HrMSI to themselves
         self.my_rec_lr_s_1 = self.net_G_LR2s_1(self.real_lhsi)
