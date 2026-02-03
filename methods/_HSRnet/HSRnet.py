@@ -8,7 +8,42 @@
 import tensorflow as tf
 import numpy as np
 import cv2
-import tensorflow.contrib.layers as ly
+try:
+    import tensorflow.contrib.layers as ly  # TF1.x
+except Exception:  # TF2.x (no contrib)
+    class _CompatLayers:
+        @staticmethod
+        def l2_regularizer(scale):
+            return tf.keras.regularizers.l2(scale)
+
+        @staticmethod
+        def variance_scaling_initializer():
+            return tf.keras.initializers.VarianceScaling()
+
+        @staticmethod
+        def conv2d(
+            inputs,
+            num_outputs,
+            kernel_size,
+            stride=1,
+            activation_fn=None,
+            weights_regularizer=None,
+            weights_initializer=None,
+            **_kwargs,
+        ):
+            # Mirror the TF contrib signature used in this repo.
+            return tf.compat.v1.layers.conv2d(
+                inputs,
+                filters=num_outputs,
+                kernel_size=kernel_size,
+                strides=stride,
+                padding='SAME',
+                activation=activation_fn,
+                kernel_initializer=weights_initializer,
+                kernel_regularizer=weights_regularizer,
+            )
+
+    ly = _CompatLayers()
 import os
 import h5py
 import scipy.io as sio
