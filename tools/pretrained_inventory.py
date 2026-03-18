@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, dataclass
+import glob
 from pathlib import Path
 from typing import Iterable, List
 
@@ -38,8 +39,27 @@ class PretrainedArtifact:
 	def abs_path(self) -> Path:
 		return REPO_ROOT / self.artifact_path
 
+	def _tf_data_shards_exist(self) -> bool:
+		"""Best-effort check for TF v1 checkpoint completeness.
+
+		If artifact_path points to a `.index` file, a matching `.data-*` shard
+		must exist next to it for the checkpoint to be restorable.
+		"""
+		p = self.abs_path()
+		if p.suffix != ".index":
+			return True
+		prefix = str(p.with_suffix(""))
+		# Typical naming: <prefix>.data-00000-of-00001 (may have multiple shards)
+		return len(glob.glob(prefix + ".data-*") ) > 0
+
 	def exists(self) -> bool:
-		return self.abs_path().exists()
+		p = self.abs_path()
+		if not p.exists():
+			return False
+		# For TF checkpoints, require data shard(s) when checking an .index entry.
+		if self.framework.lower() == "tensorflow":
+			return self._tf_data_shards_exist()
+		return True
 
 
 ARTIFACTS: List[PretrainedArtifact] = [
