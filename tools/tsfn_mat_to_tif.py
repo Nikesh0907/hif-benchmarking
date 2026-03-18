@@ -35,6 +35,7 @@ from typing import Optional, Tuple
 import numpy as np
 import scipy.io
 import tifffile
+import cv2
 
 
 def _normalize01(arr: np.ndarray) -> np.ndarray:
@@ -137,6 +138,26 @@ def main() -> int:
                 m_rgb = scipy.io.loadmat(rgb_mat_path)
                 if args.rgb_key in m_rgb:
                     rgb = _ensure_hwc(np.asarray(m_rgb[args.rgb_key]))
+                else:
+                    # Common alternative key
+                    if "rgb" in m_rgb and args.rgb_key != "rgb":
+                        rgb = _ensure_hwc(np.asarray(m_rgb["rgb"]))
+            if rgb is None:
+                # Try image files (common Kaggle layout)
+                for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"]:
+                    img_path = os.path.join(args.rgb_mat_dir, name + ext)
+                    if not os.path.isfile(img_path):
+                        continue
+                    img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                    if img is None:
+                        continue
+                    if img.ndim == 2:
+                        img = np.repeat(img[:, :, None], 3, axis=2)
+                    # OpenCV loads BGR -> RGB
+                    if img.shape[2] >= 3:
+                        img = cv2.cvtColor(img[:, :, :3], cv2.COLOR_BGR2RGB)
+                    rgb = _ensure_hwc(img.astype(np.float32))
+                    break
         elif args.rgb_from_hsi:
             rgb = _synth_rgb_from_hsi(hsi, rgb_bands)
 
