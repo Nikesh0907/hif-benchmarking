@@ -1,0 +1,6 @@
+# Convenience requirements for Kaggle/Colab.
+# The original minimal deps are in auxiliary/requirements.txt
+-r auxiliary/requirements.txt
+
+# Used by TSFN utilities / conversion.
+tifffile>=2023.0.0

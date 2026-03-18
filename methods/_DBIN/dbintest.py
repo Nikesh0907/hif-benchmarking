@@ -114,7 +114,7 @@ def _load_mat(path, key, want_channels=None, allow_autodetect=False):
     raise KeyError('Key {} not found in {}. Available: {}'.format(key, path, list(m.keys())))
 
 
-def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
+def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8, crop_size=512):
     """
         Create a test-style TFRecord with features expected by the test reader:
             pan_raw [H,W,3], pan2_raw [H/2,W/2,3], pan4_raw [H/4,W/4,3],
@@ -124,6 +124,10 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
      1) Dataset-packed mats (gt.mat/ms.mat/pan.mat containing N samples)
      2) A directory of per-scene mats (e.g., jelly_beans.mat with key 'hsi', optional 'msi')
 
+    If crop_size is not None and > 0, samples are center-cropped to a square
+    crop_size x crop_size before writing. This is important for datasets like
+    Harvard (1040x1392) when using --image_size 512.
+
     Missing derived variants are generated via bilinear resize. If 'msi' is absent,
     a 3-channel proxy is synthesized from 'hsi' bands.
     """
@@ -131,6 +135,23 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
 
     if sf < 2 or (sf % 2) != 0:
         raise ValueError('sf must be an even integer >= 2 (got {})'.format(sf))
+
+    def _center_crop_square(arr, size):
+        if size is None or size <= 0:
+            return arr
+        if arr.ndim not in (3, 4):
+            raise ValueError('Expected 3D or 4D array for cropping; got {}'.format(arr.shape))
+        if arr.ndim == 4:
+            out = []
+            for i in range(arr.shape[0]):
+                out.append(_center_crop_square(arr[i], size))
+            return np.stack(out, axis=0)
+        h, w = arr.shape[0], arr.shape[1]
+        if h < size or w < size:
+            raise ValueError('Cannot crop {} from {}'.format(size, arr.shape))
+        y0 = (h - size) // 2
+        x0 = (w - size) // 2
+        return arr[y0:y0 + size, x0:x0 + size, ...]
 
     def ensure_4d(x):
         if x.ndim == 3:
@@ -207,6 +228,15 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
             pan = np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1)
         pan = ensure_4d(_normalize01(pan))
 
+        # Optional center-crop to match --image_size placeholder expectations
+        if crop_size is not None and crop_size > 0:
+            gt = _center_crop_square(gt, crop_size)
+            pan = _center_crop_square(pan, crop_size)
+            if ms is not None:
+                # ms is LR HSI; if it's packed, keep it consistent by regenerating later.
+                # Here we just drop it to avoid shape mismatches after cropping.
+                ms = None
+
         N = gt.shape[0]
         for i in range(N):
             H, W = gt.shape[1], gt.shape[2]
@@ -263,6 +293,7 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
                 # handle packed samples inside one file
                 for i in range(gt.shape[0]):
                     gt_i = _normalize01(gt[i])
+                    gt_i = _center_crop_square(gt_i, crop_size)
                     H, W = gt_i.shape[0], gt_i.shape[1]
                     # PAN candidate (3+ channels)
                     pan_key = None
@@ -277,6 +308,10 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
                         # Last resort: synthesize RGB from 3 HSI bands (often worse than true MSI)
                         idx_b, idx_g, idx_r = 7, 15, 23
                         pan_i = _normalize01(np.stack([gt_i[..., idx_b], gt_i[..., idx_g], gt_i[..., idx_r]], axis=-1))
+
+                    pan_i = _center_crop_square(pan_i, crop_size)
+                    if pan_i.shape[0] != H or pan_i.shape[1] != W:
+                        pan_i = resize_hw(pan_i, (W, H))
 
                     pan2 = resize_hw(pan_i, (W // 2, H // 2))
                     pan4 = resize_hw(pan_i, (W // 4, H // 4))
@@ -304,6 +339,7 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
                     count += 1
             else:
                 # single sample per file
+                gt = _center_crop_square(gt, crop_size)
                 H, W = gt.shape[0], gt.shape[1]
                 pan_key = None
                 for pk in ['msi', 'pan']:
@@ -316,6 +352,10 @@ def convert_mats_to_test_tfrecord(mat_dir, save_path, rgb_dir=None, sf=8):
                 if pan is None:
                     idx_b, idx_g, idx_r = 7, 15, 23
                     pan = _normalize01(np.stack([gt[..., idx_b], gt[..., idx_g], gt[..., idx_r]], axis=-1))
+
+                pan = _center_crop_square(pan, crop_size)
+                if pan.shape[0] != H or pan.shape[1] != W:
+                    pan = resize_hw(pan, (W, H))
 
                 pan2 = resize_hw(pan, (W // 2, H // 2))
                 pan4 = resize_hw(pan, (W // 4, H // 4))
@@ -749,7 +789,13 @@ def main():
         _ensure_dir(out_dir)
         tfrecord_path = os.path.join(out_dir, 'autotest.tfrecords')
         print('Converting MATs in {} -> {}'.format(data_path, tfrecord_path))
-        convert_mats_to_test_tfrecord(data_path, tfrecord_path, rgb_dir=args.rgb_dir, sf=sf)
+        convert_mats_to_test_tfrecord(
+            data_path,
+            tfrecord_path,
+            rgb_dir=args.rgb_dir,
+            sf=sf,
+            crop_size=args.image_size,
+        )
         data_path = tfrecord_path
 
         # If user requested auto-count, we can infer after conversion.
