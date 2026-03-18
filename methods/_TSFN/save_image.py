@@ -9,7 +9,7 @@ def save_image(output, label, filename, out_results_path):
     image = output
     image = np.clip(image, 0, 1) 
     image = image * 255
-    tiff.imsave(out_results_path + str(filename) + '.tif', image.astype(np.uint8))
+    tiff.imwrite(out_results_path + str(filename) + '.tif', image.astype(np.uint8))
     
     output = output.transpose([1, 2, 0])
     output = np.clip(output, 0, 1)

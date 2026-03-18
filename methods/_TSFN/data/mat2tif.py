@@ -17,8 +17,8 @@ import scipy.io as scio
 
 for i in range(20):
 	img = scio.loadmat('./train/' + str(i+1) + '.mat').get('img')
-	tiff.imsave('./train/' + str(i+1) + '.tif', img.astype(np.float32))
+	tiff.imwrite('./train/' + str(i+1) + '.tif', img.astype(np.float32))
 
 for i in range(12):
 	img = scio.loadmat('./test/' + str(i+1) + '.mat').get('img')
-	tiff.imsave('./test/' + str(i+1) + '.tif', img.astype(np.float32))
+	tiff.imwrite('./test/' + str(i+1) + '.tif', img.astype(np.float32))
