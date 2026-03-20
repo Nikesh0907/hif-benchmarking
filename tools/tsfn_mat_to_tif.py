@@ -185,13 +185,14 @@ def main() -> int:
 
         # Stack to (34,H,W) as TSFN expects
         stacked_hwc = np.concatenate([hsi01, rgb01], axis=2)  # HxWx34
-        stacked_chw = np.transpose(stacked_hwc, (2, 0, 1))  # 34xHxW
+        stacked_chw = np.transpose(stacked_hwc, (2, 0, 1)).astype(np.float32)  # 34xHxW
 
-        # Save as uint16 to be friendly with torchvision ToTensor scaling
-        stacked_u16 = (stacked_chw * 65535.0).round().clip(0, 65535).astype(np.uint16)
-
+        # IMPORTANT: TSFN's dataloader uses torchvision.transforms.ToTensor().
+        # ToTensor scales uint8 inputs (div by 255) but does NOT scale uint16.
+        # Saving float32 in [0,1] matches TSFN's original mat2tif.py behavior and
+        # avoids feeding huge values to the network.
         out_path = os.path.join(args.out_dir, name + ".tif")
-        tifffile.imwrite(out_path, stacked_u16)
+        tifffile.imwrite(out_path, stacked_chw)
         converted += 1
 
         if (i % 25) == 0 or i == len(mats):
