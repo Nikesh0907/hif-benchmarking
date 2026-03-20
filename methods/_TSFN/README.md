@@ -16,7 +16,7 @@ Train and test the two-stream fusion network TSFN:
 
 2. Run test.py to test the TSFN;
 
-Run ./enhancement/enhance_adaptive.m to obtain the final HR-HSI estimation.
+Run ./enhancement/enhance_adaptive.m (MATLAB) or ./enhancement/enhance_adaptive.py (Python-only) to obtain the final HR-HSI estimation.
 
 For any questions, feel free to email me at xiuheng.wang@mail.nwpu.edu.cn.
 
