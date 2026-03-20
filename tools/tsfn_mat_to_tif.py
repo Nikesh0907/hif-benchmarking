@@ -38,6 +38,128 @@ import tifffile
 import cv2
 
 
+def _tsfn_create_F() -> np.ndarray:
+    """3x31 spectral response matrix used by TSFN enhancement (create_F.m)."""
+    F = np.array(
+        [
+            [
+                2,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2,
+                6,
+                11,
+                17,
+                21,
+                22,
+                21,
+                20,
+                20,
+                19,
+                19,
+                18,
+                18,
+                17,
+                17,
+            ],
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                2,
+                4,
+                6,
+                8,
+                11,
+                16,
+                19,
+                21,
+                20,
+                18,
+                16,
+                14,
+                11,
+                7,
+                5,
+                3,
+                2,
+                2,
+                1,
+                1,
+                2,
+                2,
+                2,
+                2,
+                2,
+            ],
+            [
+                7,
+                10,
+                15,
+                19,
+                25,
+                29,
+                30,
+                29,
+                27,
+                22,
+                16,
+                9,
+                2,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ],
+        ],
+        dtype=np.float32,
+    )
+    # Normalize each row to sum to 1
+    row_sums = F.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1.0
+    return F / row_sums
+
+
+def _synth_msi_from_hsi_tsfn(hsi_hwc01: np.ndarray) -> np.ndarray:
+    """Synthesize 3-band MSI using TSFN's fixed 3x31 spectral response."""
+    if hsi_hwc01.shape[2] != 31:
+        raise ValueError(f"Expected HSI with 31 bands, got {hsi_hwc01.shape}")
+    R = _tsfn_create_F()  # 3x31
+    # MSI = HSI * R^T (per-pixel spectral mixing)
+    msi = hsi_hwc01 @ R.T  # HxWx3
+    return np.clip(msi, 0.0, 1.0).astype(np.float32)
+
+
 def _normalize01(arr: np.ndarray) -> np.ndarray:
     arr = np.asarray(arr)
     if np.issubdtype(arr.dtype, np.integer):
@@ -98,6 +220,15 @@ def main() -> int:
     ap.add_argument("--out_dir", required=True, help="Output directory for .tif files")
     ap.add_argument("--hsi_key", default="hsi", help="Key for HSI cube (e.g. hsi or ref)")
     ap.add_argument("--rgb_key", default="msi", help="Key for RGB/MSI cube (e.g. msi or rgb)")
+    ap.add_argument(
+        "--rgb_from_hsi_tsfn",
+        action="store_true",
+        help=(
+            "Ignore provided RGB/MSI and synthesize the 3-band input using TSFN's fixed spectral response matrix "
+            "(same as methods/_TSFN/enhancement/create_F.m). This matches the protocol used to generate HR-MSI "
+            "from HR-HSI in TSFN's pipeline and often matters a lot for PSNR."
+        ),
+    )
     ap.add_argument("--rgb_from_hsi", action="store_true", help="If RGB key missing, synthesize RGB from HSI")
     ap.add_argument(
         "--rgb_bands",
@@ -130,36 +261,37 @@ def main() -> int:
         hsi = _ensure_hwc(np.asarray(m[args.hsi_key]))
 
         rgb: Optional[np.ndarray] = None
-        if args.rgb_key in m:
-            rgb = _ensure_hwc(np.asarray(m[args.rgb_key]))
-        elif args.rgb_mat_dir:
-            rgb_mat_path = os.path.join(args.rgb_mat_dir, name + ".mat")
-            if os.path.isfile(rgb_mat_path):
-                m_rgb = scipy.io.loadmat(rgb_mat_path)
-                if args.rgb_key in m_rgb:
-                    rgb = _ensure_hwc(np.asarray(m_rgb[args.rgb_key]))
-                else:
-                    # Common alternative key
-                    if "rgb" in m_rgb and args.rgb_key != "rgb":
-                        rgb = _ensure_hwc(np.asarray(m_rgb["rgb"]))
-            if rgb is None:
-                # Try image files (common Kaggle layout)
-                for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"]:
-                    img_path = os.path.join(args.rgb_mat_dir, name + ext)
-                    if not os.path.isfile(img_path):
-                        continue
-                    img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-                    if img is None:
-                        continue
-                    if img.ndim == 2:
-                        img = np.repeat(img[:, :, None], 3, axis=2)
-                    # OpenCV loads BGR -> RGB
-                    if img.shape[2] >= 3:
-                        img = cv2.cvtColor(img[:, :, :3], cv2.COLOR_BGR2RGB)
-                    rgb = _ensure_hwc(img.astype(np.float32))
-                    break
-        elif args.rgb_from_hsi:
-            rgb = _synth_rgb_from_hsi(hsi, rgb_bands)
+        if not args.rgb_from_hsi_tsfn:
+            if args.rgb_key in m:
+                rgb = _ensure_hwc(np.asarray(m[args.rgb_key]))
+            elif args.rgb_mat_dir:
+                rgb_mat_path = os.path.join(args.rgb_mat_dir, name + ".mat")
+                if os.path.isfile(rgb_mat_path):
+                    m_rgb = scipy.io.loadmat(rgb_mat_path)
+                    if args.rgb_key in m_rgb:
+                        rgb = _ensure_hwc(np.asarray(m_rgb[args.rgb_key]))
+                    else:
+                        # Common alternative key
+                        if "rgb" in m_rgb and args.rgb_key != "rgb":
+                            rgb = _ensure_hwc(np.asarray(m_rgb["rgb"]))
+                if rgb is None:
+                    # Try image files (common Kaggle layout)
+                    for ext in [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"]:
+                        img_path = os.path.join(args.rgb_mat_dir, name + ext)
+                        if not os.path.isfile(img_path):
+                            continue
+                        img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+                        if img is None:
+                            continue
+                        if img.ndim == 2:
+                            img = np.repeat(img[:, :, None], 3, axis=2)
+                        # OpenCV loads BGR -> RGB
+                        if img.shape[2] >= 3:
+                            img = cv2.cvtColor(img[:, :, :3], cv2.COLOR_BGR2RGB)
+                        rgb = _ensure_hwc(img.astype(np.float32))
+                        break
+            elif args.rgb_from_hsi:
+                rgb = _synth_rgb_from_hsi(hsi, rgb_bands)
 
         if rgb is None:
             raise SystemExit(
@@ -169,7 +301,15 @@ def main() -> int:
 
         # Normalize to [0,1]
         hsi01 = _normalize01(hsi)
-        rgb01 = _normalize01(rgb)
+        if args.rgb_from_hsi_tsfn:
+            rgb01 = _synth_msi_from_hsi_tsfn(hsi01)
+        else:
+            if rgb is None:
+                raise SystemExit(
+                    f"Missing RGB key '{args.rgb_key}' in {mat_path} and neither --rgb_from_hsi_tsfn nor --rgb_from_hsi set. "
+                    f"Keys={list(m.keys())}"
+                )
+            rgb01 = _normalize01(rgb)
 
         # Ensure shapes match spatially
         if hsi01.shape[0] != rgb01.shape[0] or hsi01.shape[1] != rgb01.shape[1]:
