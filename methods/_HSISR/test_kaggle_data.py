@@ -12,12 +12,16 @@ Usage:
 import argparse
 import glob
 import os
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 import scipy.io
 import torch
+
+# Add repo root to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from methods._HSISR.BlockModule import DeepShare
 from tools.hif_metrics import compute_metrics, normalize01
