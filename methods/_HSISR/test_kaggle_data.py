@@ -76,11 +76,16 @@ def main():
     ap.add_argument("--n_subs", type=int, default=8)
     ap.add_argument("--n_ovls", type=int, default=2)
     ap.add_argument("--n_colors", type=int, default=31)
+    ap.add_argument("--n_scale", type=int, default=None, help="Scale for model (defaults to sf)")
 
     args = ap.parse_args()
 
     device = torch.device("cuda" if (args.cuda == 1 and torch.cuda.is_available()) else "cpu")
     print(f"Device: {device}")
+    
+    # Default n_scale to sf if not provided
+    if args.n_scale is None:
+        args.n_scale = args.sf
 
     # Load model
     model = DeepShare(
@@ -89,6 +94,8 @@ def main():
         n_feats=args.n_feats,
         n_blocks=args.n_blocks,
         n_colors=args.n_colors,
+        n_scale=args.n_scale,
+        res_scale=0.1,
     )
     
     checkpoint = torch.load(args.weights, map_location=device)
@@ -142,7 +149,7 @@ def main():
 
             # Inference
             with torch.no_grad():
-                pred_hsi = model(lms_torch, msi_torch)
+                pred_hsi = model(lms_torch, msi_torch, modality="spectral")
             
             pred_hsi = pred_hsi.squeeze(0).permute(1, 2, 0).cpu().numpy()
             pred_hsi = normalize01(pred_hsi).astype(np.float32)
