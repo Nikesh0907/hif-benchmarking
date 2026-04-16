@@ -39,6 +39,7 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
     - CAVEdata/X/<name>.mat with key 'msi' (H,W,31) [0,1]
     - CAVEdata/Y/<name>.mat with key 'RGB' (H,W,3) [0,1]
     - CAVEdata/Z/<name>.mat with key 'Zmsi' (H/32,W/32,31) [0,1]
+    - CAVEdata/List with key 'Ind' (1-based indices; first 20 train, last 12 test)
     """
     import cv2
     
@@ -137,6 +138,20 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
         hsi_z = cv2.resize(hsi, (w_z, h_z), interpolation=cv2.INTER_AREA)
         sio.savemat(os.path.join(z_dir, name), {'Zmsi': hsi_z.astype(np.float32)})
     
+    # Create List.mat with indices (1-based, 32 total: 1-20 train, 21-32 test)
+    # For our 12 test images, create indices as if they're 21-32
+    n_images = len(hsi_files)
+    # Create list: 1 to 32, but use only what we have (all test)
+    # Split: first 20 would be train, rest test. Since we only have test, use 1:n
+    Ind = np.arange(1, n_images + 1, dtype=np.int32).reshape(-1, 1)
+    # If we have <=12 images, treat all as test (indices 21-32)
+    if n_images <= 12:
+        Ind = np.arange(21, 21 + n_images, dtype=np.int32).reshape(-1, 1)
+    
+    list_path = os.path.join(cave_root, 'List')
+    sio.savemat(list_path, {'Ind': Ind})
+    print(f"Created List.mat with {n_images} test images (indices {Ind.min()}-{Ind.max()})")
+    
     print(f"Prepared {len(hsi_files)} images in CMHF-net format")
 
 
@@ -148,17 +163,22 @@ def run_cmhf_inference_via_main(cmhf_root):
     cmhf_dir = os.path.abspath(cmhf_root)
     print(f"Running CMHF-net via CAVEmain.py (testAll mode)...")
     
-    # Read CAVEmain.py and modify FLAGS.mode to 'testAll'
+    # Read CAVEmain.py
     cavemain_path = os.path.join(cmhf_dir, 'CAVEmain.py')
     with open(cavemain_path, 'r') as f:
         content = f.read()
     
-    # Replace mode flag from 'test' to 'testAll'
-    modified_content = content.replace("FLAGS.mode, 'test'", "FLAGS.mode, 'testAll'")
+    # Replace the FLAGS.mode default more robustly
+    # Change: tf.app.flags.DEFINE_string('mode', 'test', ...)
+    # To:     tf.app.flags.DEFINE_string('mode', 'testAll', ...)
+    modified = content.replace(
+        "tf.app.flags.DEFINE_string('mode', 'test',",
+        "tf.app.flags.DEFINE_string('mode', 'testAll',"
+    )
     
-    # Write to temp file
+    # Write modified version to temp file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, dir=cmhf_dir) as tmp:
-        tmp.write(modified_content)
+        tmp.write(modified)
         tmp_path = tmp.name
     
     try:
@@ -166,16 +186,18 @@ def run_cmhf_inference_via_main(cmhf_root):
         result = subprocess.run(
             [sys.executable, tmp_path],
             cwd=cmhf_dir,
-            timeout=600,
+            timeout=900,  # 15 minutes
             capture_output=False
         )
         if result.returncode == 0:
             print("✓ Inference completed")
         else:
-            print(f"⚠ CAVEmain.py returned code {result.returncode}")
+            print(f"⚠ CAVEmain returned code {result.returncode}")
+            print("  (This may still have generated results)")
+        
         return os.path.join(cmhf_root, 'TestResult', 'Result')
     except subprocess.TimeoutExpired:
-        print("⚠ Inference timed out after 10 minutes")
+        print("⚠ Inference timed out after 15 minutes")
         return os.path.join(cmhf_root, 'TestResult', 'Result')
     except Exception as e:
         print(f"⚠ Inference failed: {e}")
@@ -218,11 +240,15 @@ def main():
     print("\n[3/3] Computing metrics...")
     eval_script = os.path.join(os.path.dirname(__file__), 'eval_mhfnet_cave.py')
     
+    split_list_path = os.path.join(cmhf_root, 'CAVEdata', 'List.mat')
+    if not os.path.exists(split_list_path):
+        split_list_path = ''  # Empty string = disable split list
+    
     cmd = [
         sys.executable, eval_script,
         '--pred_dir', result_dir,
         '--gt_dir', os.path.join(cmhf_root, 'CAVEdata', 'X'),
-        '--split_list', os.path.join(cmhf_root, 'CAVEdata', 'List'),
+        '--split_list', split_list_path,
         '--sf', '32'
     ]
     
