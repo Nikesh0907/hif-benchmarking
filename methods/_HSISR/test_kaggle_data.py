@@ -83,6 +83,7 @@ def to_torch_chw(arr_hwc, device):
 def process_image_in_patches(model, lms, msi, patch_size, scale_factor, device):
     """Process image in overlapping patches to reduce memory usage."""
     h, w, c = lms.shape
+    print(f"DEBUG process_image_in_patches: lms={lms.shape}, msi={msi.shape}, h={h}, w={w}, c={c}, patch_size={patch_size}")
     out_h, out_w = h * scale_factor, w * scale_factor
     
     # Use stride = patch_size // 2 for 50% overlap
@@ -97,9 +98,13 @@ def process_image_in_patches(model, lms, msi, patch_size, scale_factor, device):
             lms_patch = lms[y:y+patch_size, x:x+patch_size, :]
             msi_patch = msi[y:y+patch_size, x:x+patch_size, :]
             
+            print(f"DEBUG patch at y={y}, x={x}: lms_patch={lms_patch.shape}, msi_patch={msi_patch.shape}")
+            
             # Process patch
             lms_torch = to_torch_chw(lms_patch, device)
             msi_torch = to_torch_chw(msi_patch, device)
+            
+            print(f"DEBUG torch: lms_torch={lms_torch.shape}, msi_torch={msi_torch.shape}")
             
             with torch.no_grad():
                 pred = model(lms_torch, msi_torch, modality="spectral")
