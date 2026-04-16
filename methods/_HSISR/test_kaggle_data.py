@@ -86,8 +86,6 @@ def process_image_in_patches(model, lr_hsi, upsampled_lms, patch_size, scale_fac
     x_torch = to_torch_chw(lr_hsi, device)
     lms_torch = to_torch_chw(upsampled_lms, device)
     
-    print(f"DEBUG: x_torch={x_torch.shape}, lms_torch={lms_torch.shape}")
-    
     with torch.no_grad():
         pred = model(x_torch, lms_torch, modality="spectral")
     
@@ -159,7 +157,6 @@ def main():
             
             # Load GT HSI
             gt_hsi = load_mat(hsi_path)
-            print(f"\nDEBUG: gt_hsi shape = {gt_hsi.shape}, dtype = {gt_hsi.dtype}")
             
             # Load RGB (try corresponding file in rgb_dir)
             rgb_stem = os.path.splitext(fname)[0]
@@ -171,18 +168,16 @@ def main():
                 print(f"{fname}: RGB synthesized (not found in rgb_dir)")
             else:
                 msi = load_mat(rgb_path)
-                print(f"DEBUG: msi shape = {msi.shape}, {fname}: RGB loaded", end="")
+                print(f"{fname}: RGB loaded", end="")
             
             print(f"  msi shape = {msi.shape}")
 
             # Create LR-HSI by downsampling GT
             h, w = gt_hsi.shape[0] // args.sf, gt_hsi.shape[1] // args.sf
             lr_hsi = cv2.resize(gt_hsi, (w, h), interpolation=cv2.INTER_AREA)
-            print(f"DEBUG: lr_hsi shape = {lr_hsi.shape}")
 
             # Bicubic interpolation for reference
             lms = bicubic_upsample(lr_hsi, args.sf)
-            print(f"DEBUG: lms shape = {lms.shape}")
 
             # HSISR expects: 
             # - arg1 (x): LOW-RES HSI (downsampled)
@@ -200,22 +195,23 @@ def main():
 
             # Compute metrics
             gt_norm = normalize01(gt_hsi).astype(np.float32)
+            metrics = compute_metrics(pred_hsi, gt_norm, ratio=args.sf)
             
-            psnr = compute_metrics(pred_hsi, gt_norm)['PSNR']
-            sam = compute_metrics(pred_hsi, gt_norm)['SAM']
-            ergas = compute_metrics(pred_hsi, gt_norm)['ERGAS']
-            ssim = compute_metrics(pred_hsi, gt_norm)['SSIM']
+            psnr = metrics['psnr']
+            sam = metrics['sam']
+            ergas = metrics['ergas']
+            ssim = metrics['ssim']
 
-            metrics_list.append({'PSNR': psnr, 'SAM': sam, 'ERGAS': ergas, 'SSIM': ssim})
+            metrics_list.append({'psnr': psnr, 'sam': sam, 'ergas': ergas, 'ssim': ssim})
             
-            print(f" → PSNR={psnr:.2f}, SAM={sam:.2f}, ERGAS={ergas:.2f}, SSIM={ssim:.4f}")
+            print(f" → PSNR={psnr:.2f}, SAM={sam:.2f}, ERGAS={ergas:.4f}, SSIM={ssim:.4f}")
 
     # Summary
     print("\n" + "=" * 70)
-    avg_psnr = np.mean([m['PSNR'] for m in metrics_list])
-    avg_sam = np.mean([m['SAM'] for m in metrics_list])
-    avg_ergas = np.mean([m['ERGAS'] for m in metrics_list])
-    avg_ssim = np.mean([m['SSIM'] for m in metrics_list])
+    avg_psnr = np.mean([m['psnr'] for m in metrics_list])
+    avg_sam = np.mean([m['sam'] for m in metrics_list])
+    avg_ergas = np.mean([m['ergas'] for m in metrics_list])
+    avg_ssim = np.mean([m['ssim'] for m in metrics_list])
     
     print(f"Average (SF={args.sf}):")
     print(f"  PSNR:  {avg_psnr:.2f} dB")
