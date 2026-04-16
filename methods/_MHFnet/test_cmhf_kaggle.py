@@ -146,47 +146,26 @@ def run_cmhf_inference_via_main(cmhf_root):
     cmhf_dir = os.path.abspath(cmhf_root)
     print(f"Running CMHF-net via CAVEmain.py...")
     
-    # Python code snippet to run testAll mode
-    python_code = f"""
-import os
-import sys
-os.chdir('{cmhf_dir}')
-sys.path.insert(0, '{cmhf_dir}')
-
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
-
-# Import CAVEmain components
-import CAVE_dataReader as Crd
-import MyLib as ML
-import numpy as np
-import scipy.io as sio
-
-# Load data and run inference
-Crd.prepare()  
-data = Crd.input('testAll')
-
-print("Running testAll inference on {} images...".format(len(data)))
-# This will be handled by CAVEmain logic
-import CAVEmain
-if hasattr(CAVEmain, 'testAll'):
-    CAVEmain.testAll(data)
-else:
-    print("CAVEmain.testAll not directly callable; running via module execution")
-"""
-    
     try:
-        # Try running CAVEmain directly as a module with modified FLAGS
-        subprocess.run(
+        # Run CAVEmain directly with subprocess
+        # Make sure CAVEmain.py has mode='testAll' in the FLAGS or we edit it temporarily
+        result = subprocess.run(
             [sys.executable, os.path.join(cmhf_dir, 'CAVEmain.py')],
             cwd=cmhf_dir,
-            env={**os.environ, 'TF_CPP_MIN_LOG_LEVEL': '2'},
-            timeout=600
+            timeout=600,
+            capture_output=False
         )
-        print("✓ Inference completed")
+        if result.returncode == 0:
+            print("✓ Inference completed")
+        else:
+            print(f"⚠ CAVEmain.py returned code {result.returncode}")
+        return os.path.join(cmhf_root, 'TestResult', 'Result')
+    except subprocess.TimeoutExpired:
+        print("⚠ Inference timed out after 10 minutes")
+        print("Results may still be saved in TestResult/Result")
         return os.path.join(cmhf_root, 'TestResult', 'Result')
     except Exception as e:
-        print(f"CAVEmain execution failed: {e}")
+        print(f"⚠ CAVEmain.py execution failed: {e}")
         print("Note: You may need to manually run CAVEmain.py with mode='testAll'")
         return os.path.join(cmhf_root, 'TestResult', 'Result')
 
