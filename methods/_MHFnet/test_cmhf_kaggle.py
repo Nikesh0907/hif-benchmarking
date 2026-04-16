@@ -21,6 +21,7 @@ import os
 import sys
 import argparse
 import subprocess
+import tempfile
 import numpy as np
 import scipy.io as sio
 from glob import glob
@@ -142,15 +143,28 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
 def run_cmhf_inference_via_main(cmhf_root):
     """Run CMHF-net inference using CAVEmain.py testAll mode."""
     import subprocess
+    import tempfile
     
     cmhf_dir = os.path.abspath(cmhf_root)
-    print(f"Running CMHF-net via CAVEmain.py...")
+    print(f"Running CMHF-net via CAVEmain.py (testAll mode)...")
+    
+    # Read CAVEmain.py and modify FLAGS.mode to 'testAll'
+    cavemain_path = os.path.join(cmhf_dir, 'CAVEmain.py')
+    with open(cavemain_path, 'r') as f:
+        content = f.read()
+    
+    # Replace mode flag from 'test' to 'testAll'
+    modified_content = content.replace("FLAGS.mode, 'test'", "FLAGS.mode, 'testAll'")
+    
+    # Write to temp file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, dir=cmhf_dir) as tmp:
+        tmp.write(modified_content)
+        tmp_path = tmp.name
     
     try:
-        # Run CAVEmain directly with subprocess
-        # Make sure CAVEmain.py has mode='testAll' in the FLAGS or we edit it temporarily
+        # Run the modified script
         result = subprocess.run(
-            [sys.executable, os.path.join(cmhf_dir, 'CAVEmain.py')],
+            [sys.executable, tmp_path],
             cwd=cmhf_dir,
             timeout=600,
             capture_output=False
@@ -162,12 +176,16 @@ def run_cmhf_inference_via_main(cmhf_root):
         return os.path.join(cmhf_root, 'TestResult', 'Result')
     except subprocess.TimeoutExpired:
         print("⚠ Inference timed out after 10 minutes")
-        print("Results may still be saved in TestResult/Result")
         return os.path.join(cmhf_root, 'TestResult', 'Result')
     except Exception as e:
-        print(f"⚠ CAVEmain.py execution failed: {e}")
-        print("Note: You may need to manually run CAVEmain.py with mode='testAll'")
+        print(f"⚠ Inference failed: {e}")
         return os.path.join(cmhf_root, 'TestResult', 'Result')
+    finally:
+        # Clean up temp file
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
 
 
 def main():
@@ -202,8 +220,9 @@ def main():
     
     cmd = [
         sys.executable, eval_script,
-        '--cmhf_root', cmhf_root,
         '--pred_dir', result_dir,
+        '--gt_dir', os.path.join(cmhf_root, 'CAVEdata', 'X'),
+        '--split_list', os.path.join(cmhf_root, 'CAVEdata', 'List'),
         '--sf', '32'
     ]
     
