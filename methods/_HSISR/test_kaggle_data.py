@@ -190,6 +190,7 @@ def main():
             
             # Load GT HSI
             gt_hsi = load_mat(hsi_path)
+            print(f"\nDEBUG: gt_hsi shape = {gt_hsi.shape}, dtype = {gt_hsi.dtype}")
             
             # Load RGB (try corresponding file in rgb_dir)
             rgb_stem = os.path.splitext(fname)[0]
@@ -201,14 +202,18 @@ def main():
                 print(f"{fname}: RGB synthesized (not found in rgb_dir)")
             else:
                 msi = load_mat(rgb_path)
-                print(f"{fname}: RGB loaded", end="")
+                print(f"DEBUG: msi shape = {msi.shape}, {fname}: RGB loaded", end="")
+            
+            print(f"  msi shape = {msi.shape}")
 
             # Create LR-HSI by downsampling GT
             h, w = gt_hsi.shape[0] // args.sf, gt_hsi.shape[1] // args.sf
             lr_hsi = cv2.resize(gt_hsi, (w, h), interpolation=cv2.INTER_AREA)
+            print(f"DEBUG: lr_hsi shape = {lr_hsi.shape}")
 
             # Bicubic interpolation for reference
             lms = bicubic_upsample(lr_hsi, args.sf)
+            print(f"DEBUG: lms shape = {lms.shape}")
 
             # HSISR expects: LR-HSI (upsampled) + HR-MSI as input
             # Prepare inputs - will be processed in patches below
