@@ -89,8 +89,14 @@ def process_image_in_patches(model, lr_hsi, upsampled_lms, patch_size, scale_fac
     with torch.no_grad():
         pred = model(x_torch, lms_torch, modality="spectral")
     
+    print(f"[DEBUG] Raw model output shape: {pred.shape}")
+    print(f"[DEBUG] Raw model output range: [{pred.min().item():.4f}, {pred.max().item():.4f}]")
+    
     pred_np = pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    print(f"[DEBUG] After permute shape: {pred_np.shape}, range: [{pred_np.min():.4f}, {pred_np.max():.4f}]")
+    
     pred_np = normalize01(pred_np).astype(np.float32)
+    print(f"[DEBUG] After normalize shape: {pred_np.shape}, range: [{pred_np.min():.4f}, {pred_np.max():.4f}]")
     
     return pred_np
 
@@ -195,6 +201,10 @@ def main():
 
             # Compute metrics
             gt_norm = normalize01(gt_hsi).astype(np.float32)
+            print(f"[DEBUG] Image: {fname}")
+            print(f"[DEBUG] GT shape: {gt_norm.shape}, range: [{gt_norm.min():.4f}, {gt_norm.max():.4f}]")
+            print(f"[DEBUG] Pred shape: {pred_hsi.shape}, range: [{pred_hsi.min():.4f}, {pred_hsi.max():.4f}]")
+            
             metrics = compute_metrics(pred_hsi, gt_norm, ratio=args.sf)
             
             psnr = metrics['psnr']
