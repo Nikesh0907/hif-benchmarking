@@ -80,57 +80,21 @@ def to_torch_chw(arr_hwc, device):
     return torch.from_numpy(arr01).permute(2, 0, 1).unsqueeze(0).to(device)
 
 
-def process_image_in_patches(model, lms, msi, patch_size, scale_factor, device):
-    """Process image in overlapping patches to reduce memory usage."""
-    h, w, c = lms.shape
-    print(f"DEBUG process_image_in_patches: lms={lms.shape}, msi={msi.shape}, h={h}, w={w}, c={c}, patch_size={patch_size}")
-    out_h, out_w = h * scale_factor, w * scale_factor
+def process_image_in_patches(model, lr_hsi, upsampled_lms, patch_size, scale_factor, device):
+    """Process full image (LR-HSI is small enough, no patching needed)."""
+    # LR-HSI is already small (~128x128), process the full images together
+    x_torch = to_torch_chw(lr_hsi, device)
+    lms_torch = to_torch_chw(upsampled_lms, device)
     
-    # Use stride = patch_size // 2 for 50% overlap
-    stride = patch_size // 2
+    print(f"DEBUG: x_torch={x_torch.shape}, lms_torch={lms_torch.shape}")
     
-    output = np.zeros((out_h, out_w, c), dtype=np.float32)
-    weight_map = np.zeros((out_h, out_w, 1), dtype=np.float32)
+    with torch.no_grad():
+        pred = model(x_torch, lms_torch, modality="spectral")
     
-    for y in range(0, h - patch_size + 1, stride):
-        for x in range(0, w - patch_size + 1, stride):
-            # Extract patches
-            lms_patch = lms[y:y+patch_size, x:x+patch_size, :]
-            msi_patch = msi[y:y+patch_size, x:x+patch_size, :]
-            
-            print(f"DEBUG patch at y={y}, x={x}: lms_patch={lms_patch.shape}, msi_patch={msi_patch.shape}")
-            
-            # Process patch
-            lms_torch = to_torch_chw(lms_patch, device)
-            msi_torch = to_torch_chw(msi_patch, device)
-            
-            print(f"DEBUG torch: lms_torch={lms_torch.shape}, msi_torch={msi_torch.shape}")
-            
-            with torch.no_grad():
-                pred = model(lms_torch, msi_torch, modality="spectral")
-            
-            pred_np = pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            pred_np = normalize01(pred_np).astype(np.float32)
-            
-            out_y = y * scale_factor
-            out_x = x * scale_factor
-            out_patch_h = patch_size * scale_factor
-            out_patch_w = patch_size * scale_factor
-            
-            # Handle boundary patches
-            if out_y + out_patch_h > out_h:
-                out_patch_h = out_h - out_y
-            if out_x + out_patch_w > out_w:
-                out_patch_w = out_w - out_x
-            
-            output[out_y:out_y+out_patch_h, out_x:out_x+out_patch_w, :] += pred_np[:out_patch_h, :out_patch_w, :]
-            weight_map[out_y:out_y+out_patch_h, out_x:out_x+out_patch_w, :] += 1.0
+    pred_np = pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    pred_np = normalize01(pred_np).astype(np.float32)
     
-    # Avoid division by zero
-    weight_map[weight_map == 0] = 1.0
-    output = output / weight_map
-    
-    return output
+    return pred_np
 
 
 def main():
@@ -220,12 +184,15 @@ def main():
             lms = bicubic_upsample(lr_hsi, args.sf)
             print(f"DEBUG: lms shape = {lms.shape}")
 
-            # HSISR expects: LR-HSI (upsampled) + HR-MSI as input
-            # Prepare inputs - will be processed in patches below
+            # HSISR expects: 
+            # - arg1 (x): LOW-RES HSI (downsampled)
+            # - arg2 (lms): UPSAMPLED LOW-RES HSI (bicubic interpolated)
+            # - modality: "spectral"
+            # NOT the MSI/RGB channel!
             
             # Inference (patch-based to save memory)
             pred_hsi = process_image_in_patches(
-                model, lms, msi, 
+                model, lr_hsi, lms, 
                 patch_size=args.patch_size,
                 scale_factor=args.sf,
                 device=device
