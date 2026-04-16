@@ -61,6 +61,54 @@ def to_torch_chw(arr_hwc, device):
     return torch.from_numpy(arr01).permute(2, 0, 1).unsqueeze(0).to(device)
 
 
+def process_image_in_patches(model, lms, msi, patch_size, scale_factor, device):
+    """Process image in overlapping patches to reduce memory usage."""
+    h, w, c = lms.shape
+    out_h, out_w = h * scale_factor, w * scale_factor
+    
+    # Use stride = patch_size // 2 for 50% overlap
+    stride = patch_size // 2
+    
+    output = np.zeros((out_h, out_w, c), dtype=np.float32)
+    weight_map = np.zeros((out_h, out_w, 1), dtype=np.float32)
+    
+    for y in range(0, h - patch_size + 1, stride):
+        for x in range(0, w - patch_size + 1, stride):
+            # Extract patches
+            lms_patch = lms[y:y+patch_size, x:x+patch_size, :]
+            msi_patch = msi[y:y+patch_size, x:x+patch_size, :]
+            
+            # Process patch
+            lms_torch = to_torch_chw(lms_patch, device)
+            msi_torch = to_torch_chw(msi_patch, device)
+            
+            with torch.no_grad():
+                pred = model(lms_torch, msi_torch, modality="spectral")
+            
+            pred_np = pred.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            pred_np = normalize01(pred_np).astype(np.float32)
+            
+            out_y = y * scale_factor
+            out_x = x * scale_factor
+            out_patch_h = patch_size * scale_factor
+            out_patch_w = patch_size * scale_factor
+            
+            # Handle boundary patches
+            if out_y + out_patch_h > out_h:
+                out_patch_h = out_h - out_y
+            if out_x + out_patch_w > out_w:
+                out_patch_w = out_w - out_x
+            
+            output[out_y:out_y+out_patch_h, out_x:out_x+out_patch_w, :] += pred_np[:out_patch_h, :out_patch_w, :]
+            weight_map[out_y:out_y+out_patch_h, out_x:out_x+out_patch_w, :] += 1.0
+    
+    # Avoid division by zero
+    weight_map[weight_map == 0] = 1.0
+    output = output / weight_map
+    
+    return output
+
+
 def main():
     ap = argparse.ArgumentParser(description="HSISR test on Kaggle HSI+RGB data")
     ap.add_argument("hsi_dir", help="Directory with HSI .mat files")
@@ -69,6 +117,7 @@ def main():
     ap.add_argument("--sf", type=int, default=4, help="Scale factor (4/8/16)")
     ap.add_argument("--cuda", type=int, default=1, help="Use CUDA if available")
     ap.add_argument("--limit", type=int, default=0, help="Limit images (0=all)")
+    ap.add_argument("--patch_size", type=int, default=128, help="Patch size for processing (reduces memory)")
     
     # Model hyperparams (must match weights)
     ap.add_argument("--n_feats", type=int, default=256)
@@ -143,16 +192,15 @@ def main():
             lms = bicubic_upsample(lr_hsi, args.sf)
 
             # HSISR expects: LR-HSI (upsampled) + HR-MSI as input
-            # Prepare inputs
-            lms_torch = to_torch_chw(lms, device)
-            msi_torch = to_torch_chw(msi, device)
-
-            # Inference
-            with torch.no_grad():
-                pred_hsi = model(lms_torch, msi_torch, modality="spectral")
+            # Prepare inputs - will be processed in patches below
             
-            pred_hsi = pred_hsi.squeeze(0).permute(1, 2, 0).cpu().numpy()
-            pred_hsi = normalize01(pred_hsi).astype(np.float32)
+            # Inference (patch-based to save memory)
+            pred_hsi = process_image_in_patches(
+                model, lms, msi, 
+                patch_size=args.patch_size,
+                scale_factor=args.sf,
+                device=device
+            )
 
             # Compute metrics
             gt_norm = normalize01(gt_hsi).astype(np.float32)
