@@ -28,21 +28,40 @@ from tools.hif_metrics import compute_metrics, normalize01
 
 
 def load_mat(path, key=None):
-    """Load .mat file, auto-detect key if not specified."""
+    """Load .mat file, auto-detect key if not specified.
+    
+    Returns: HWC format array (channels-last).
+    Automatically transposes from CHW if detected.
+    """
     mat = scipy.io.loadmat(path)
     if key:
-        return np.asarray(mat[key], dtype=np.float32)
-    # Try common keys
-    for k in ['hsi', 'gt', 'ref', 'cube', 'X']:
-        if k in mat:
-            return np.asarray(mat[k], dtype=np.float32)
-    # Fallback: largest 3D array
-    for k in mat.keys():
-        if not k.startswith('__'):
-            arr = np.asarray(mat[k])
-            if arr.ndim == 3:
-                return arr.astype(np.float32)
-    raise ValueError(f"Could not find HSI data in {path}")
+        data = np.asarray(mat[key], dtype=np.float32)
+    else:
+        # Try common keys
+        data = None
+        for k in ['hsi', 'gt', 'ref', 'cube', 'X']:
+            if k in mat:
+                data = np.asarray(mat[k], dtype=np.float32)
+                break
+        
+        if data is None:
+            # Fallback: largest 3D array
+            for k in mat.keys():
+                if not k.startswith('__'):
+                    arr = np.asarray(mat[k])
+                    if arr.ndim == 3:
+                        data = arr.astype(np.float32)
+                        break
+        
+        if data is None:
+            raise ValueError(f"Could not find HSI data in {path}")
+    
+    # Transpose from CHW to HWC if needed (MATLAB default is channels-first)
+    if data.ndim == 3 and data.shape[0] < min(data.shape[1], data.shape[2]):
+        # Likely CHW format (channels << height/width), transpose to HWC
+        data = np.transpose(data, (1, 2, 0))
+    
+    return data
 
 
 def bicubic_upsample(lr_hsi, scale_factor):
