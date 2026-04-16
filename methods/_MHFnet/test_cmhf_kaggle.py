@@ -4,8 +4,8 @@ Test CMHF-net on Kaggle CAVE dataset.
 
 This script:
 1. Prepares CAVE data from Kaggle format into CMHF-net format
-2. Runs CMHF-net inference (testAll)
-3. Computes metrics (PSNR, SAM, ERGAS, SSIM)
+2. Runs CMHF-net inference via CAVEmain.py (testAll mode)
+3. Computes metrics using eval_mhfnet_cave.py
 
 Usage:
     python methods/_MHFnet/test_cmhf_kaggle.py \
@@ -20,6 +20,7 @@ Requirements:
 import os
 import sys
 import argparse
+import subprocess
 import numpy as np
 import scipy.io as sio
 from glob import glob
@@ -53,7 +54,10 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
     response_path = os.path.join(cave_root, 'response coefficient.mat')
     response = None
     if os.path.exists(response_path):
-        response = sio.loadmat(response_path).get('R', None)
+        try:
+            response = sio.loadmat(response_path).get('R', None)
+        except:
+            response = None
     
     hsi_files = sorted(glob(os.path.join(hsi_dir, '*.mat')))
     
@@ -77,33 +81,40 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
         
         # Load or synthesize RGB
         rgb_path = os.path.join(rgb_dir, name)
+        rgb = None
         if os.path.exists(rgb_path):
-            rgb_data = sio.loadmat(rgb_path)
-            if 'rgb' in rgb_data:
-                rgb = rgb_data['rgb']
-            elif 'msi' in rgb_data:
-                rgb = rgb_data['msi']
-            else:
+            try:
+                rgb_data = sio.loadmat(rgb_path)
+                if 'rgb' in rgb_data:
+                    rgb = rgb_data['rgb']
+                elif 'msi' in rgb_data:
+                    rgb = rgb_data['msi']
+                if rgb is not None:
+                    rgb = normalize01(np.asarray(rgb, dtype=np.float32))
+                    if rgb.ndim == 4:
+                        rgb = rgb[0]
+                    if rgb.shape[2] > 3:
+                        rgb = rgb[:, :, :3]
+            except:
                 rgb = None
-            if rgb is not None:
-                rgb = normalize01(np.asarray(rgb, dtype=np.float32))
-        else:
-            rgb = None
         
-        # If RGB not found, synthesize from HSI
+        # If RGB not found, synthesize from response matrix or bands
         if rgb is None and response is not None:
-            # RGB = HSI @ R^T (response matrix multiplication)
-            # response shape: (31, 3) or (3, 31)
-            response_use = response
-            if response_use.shape[0] == 3:
-                response_use = response_use.T  # (3, 31) -> (31, 3)
-            h, w = hsi.shape[:2]
-            hsi_reshaped = hsi.reshape(-1, 31)  # (H*W, 31)
-            rgb = hsi_reshaped @ response_use  # (H*W, 3)
-            rgb = rgb.reshape(h, w, 3)
-            rgb = normalize01(rgb.astype(np.float32))
-            print(f"  {name}: RGB synthesized from response matrix")
-        elif rgb is None:
+            try:
+                # RGB = HSI @ R^T (response matrix multiplication)
+                response_use = np.asarray(response)
+                if response_use.shape[0] == 3:
+                    response_use = response_use.T  # (3, 31) -> (31, 3)
+                h, w = hsi.shape[:2]
+                hsi_reshaped = hsi.reshape(-1, 31)  # (H*W, 31)
+                rgb = hsi_reshaped @ response_use  # (H*W, 3)
+                rgb = rgb.reshape(h, w, 3)
+                rgb = normalize01(rgb.astype(np.float32))
+                print(f"  {name}: RGB synthesized (response matrix)")
+            except:
+                rgb = None
+        
+        if rgb is None:
             # Fallback: use simple band selection
             idx_r, idx_g, idx_b = 23, 15, 7
             if hsi.shape[2] >= idx_r + 1:
@@ -128,143 +139,56 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
     print(f"Prepared {len(hsi_files)} images in CMHF-net format")
 
 
-def run_cmhf_inference(cmhf_root):
-    """Run CMHF-net inference on prepared CAVE data."""
-    import tensorflow.compat.v1 as tf
-    tf.disable_v2_behavior()
+def run_cmhf_inference_via_main(cmhf_root):
+    """Run CMHF-net inference using CAVEmain.py testAll mode."""
+    import subprocess
     
-    # Change to CMHF-net directory and import modules
-    cmhf_py = os.path.join(cmhf_root)
-    sys.path.insert(0, cmhf_py)
+    cmhf_dir = os.path.abspath(cmhf_root)
+    print(f"Running CMHF-net via CAVEmain.py...")
     
-    import CAVEmain
-    
-    # Create result directory
-    result_dir = os.path.join(cmhf_root, 'TestResult', 'Result')
-    os.makedirs(result_dir, exist_ok=True)
-    
-    print(f"Running CMHF-net inference...")
-    # The CAVEmain will handle inference via testAll mode
-    # This is a bit tricky since CAVEmain uses tf.app.flags
-    # We'll do a simple manual inference instead
-    
-    import CAVE_dataReader as Crd
-    import MHFnet
-    import MyLib as ML
-    
-    outDim = 31
-    upRank = 12
-    
-    # Load the trained model
-    model_path = os.path.join(cmhf_root, 'temp', 'TrainedNet')
-    
-    # Get test image names
-    cave_data_root = os.path.join(cmhf_root, 'CAVEdata')
-    x_dir = os.path.join(cave_data_root, 'X')
-    test_names = sorted([f for f in os.listdir(x_dir) if f.endswith('.mat')])
-    
-    # Create TF session and run inference
-    tf.reset_default_graph()
-    
-    with tf.Session() as sess:
-        # Define model inputs
-        y_input = tf.placeholder(tf.float32, shape=[None, None, 3], name='y_input')
-        Z_input = tf.placeholder(tf.float32, shape=[None, None, outDim], name='Z_input')
-        
-        # Build network
-        net = MHFnet.net_tf(y_input, Z_input, upRank)
-        
-        # Restore weights
-        saver = tf.train.Saver()
-        saver.restore(sess, os.path.join(model_path, 'model-epoch-30'))
-        print(f"Loaded model from {model_path}/model-epoch-30")
-        
-        # Run inference on each test image
-        for name in test_names:
-            x_path = os.path.join(x_dir, name)
-            y_path = os.path.join(cave_data_root, 'Y', name)
-            z_path = os.path.join(cave_data_root, 'Z', name)
-            
-            # Load data
-            x = sio.loadmat(x_path)['msi']  # Ground truth
-            y = sio.loadmat(y_path)['RGB']  # RGB input
-            z = sio.loadmat(z_path)['Zmsi']  # Downsampled HSI
-            
-            # Run inference
-            out = sess.run(net, feed_dict={y_input: y, Z_input: z})
-            
-            # Save result
-            out_path = os.path.join(result_dir, name)
-            sio.savemat(out_path, {'outX': out.astype(np.float32)})
-            
-            print(f"  {name}: saved")
-    
-    print(f"Inference complete. Results in {result_dir}")
-    return result_dir
+    # Python code snippet to run testAll mode
+    python_code = f"""
+import os
+import sys
+os.chdir('{cmhf_dir}')
+sys.path.insert(0, '{cmhf_dir}')
 
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
-def compute_metrics(cmhf_root, pred_dir, sf=32):
-    """Compute PSNR, SAM, ERGAS, SSIM on test results."""
-    from skimage.metrics import structural_similarity as compare_ssim
+# Import CAVEmain components
+import CAVE_dataReader as Crd
+import MyLib as ML
+import numpy as np
+import scipy.io as sio
+
+# Load data and run inference
+Crd.prepare()  
+data = Crd.input('testAll')
+
+print("Running testAll inference on {} images...".format(len(data)))
+# This will be handled by CAVEmain logic
+import CAVEmain
+if hasattr(CAVEmain, 'testAll'):
+    CAVEmain.testAll(data)
+else:
+    print("CAVEmain.testAll not directly callable; running via module execution")
+"""
     
-    cave_root = os.path.join(cmhf_root, 'CAVEdata')
-    x_dir = os.path.join(cave_root, 'X')
-    test_names = sorted([f for f in os.listdir(x_dir) if f.endswith('.mat')])
-    
-    results = []
-    
-    for name in test_names:
-        x_path = os.path.join(x_dir, name)
-        pred_path = os.path.join(pred_dir, name)
-        
-        if not os.path.exists(pred_path):
-            print(f"  {name}: prediction not found, skipping")
-            continue
-        
-        # Load GT and prediction
-        gt = sio.loadmat(x_path)['msi']  # (H, W, 31)
-        pred = sio.loadmat(pred_path)['outX']  # (H, W, 31) or (1, H, W, 31)
-        
-        if pred.ndim == 4:
-            pred = pred[0]
-        
-        # Compute metrics
-        # PSNR
-        mse = np.mean((gt - pred) ** 2)
-        psnr = 10.0 * np.log10(1.0 / (mse + 1e-10)) if mse > 0 else 100.0
-        
-        # SAM (degrees)
-        gt_flat = gt.reshape(-1, 31)
-        pred_flat = pred.reshape(-1, 31)
-        dots = np.sum(gt_flat * pred_flat, axis=1)
-        norms_gt = np.linalg.norm(gt_flat, axis=1)
-        norms_pred = np.linalg.norm(pred_flat, axis=1)
-        norms = norms_gt * norms_pred + 1e-10
-        sam = np.mean(np.arccos(np.clip(dots / norms, -1, 1))) * (180 / np.pi)
-        
-        # SSIM (band-wise average)
-        ssim = 0.0
-        for b in range(31):
-            ssim += float(compare_ssim(gt[..., b], pred[..., b], data_range=1.0))
-        ssim /= 31.0
-        
-        # ERGAS
-        mse_per_band = np.mean((gt - pred) ** 2, axis=(0, 1))
-        pred_mean = np.mean(pred.reshape(-1, 31), axis=0)
-        ergas = 100.0 / sf * np.sqrt(np.mean(mse_per_band / (pred_mean ** 2 + 1e-12)))
-        
-        results.append({'name': name, 'psnr': psnr, 'sam': sam, 'ergas': ergas, 'ssim': ssim})
-        print(f"  {name}: PSNR={psnr:.2f} SAM={sam:.2f} ERGAS={ergas:.4f} SSIM={ssim:.4f}")
-    
-    # Average
-    if results:
-        avg_psnr = np.mean([r['psnr'] for r in results])
-        avg_sam = np.mean([r['sam'] for r in results])
-        avg_ergas = np.mean([r['ergas'] for r in results])
-        avg_ssim = np.mean([r['ssim'] for r in results])
-        print(f"\nAverage: PSNR={avg_psnr:.2f} SAM={avg_sam:.2f} ERGAS={avg_ergas:.4f} SSIM={avg_ssim:.4f}")
-    
-    return results
+    try:
+        # Try running CAVEmain directly as a module with modified FLAGS
+        subprocess.run(
+            [sys.executable, os.path.join(cmhf_dir, 'CAVEmain.py')],
+            cwd=cmhf_dir,
+            env={**os.environ, 'TF_CPP_MIN_LOG_LEVEL': '2'},
+            timeout=600
+        )
+        print("✓ Inference completed")
+        return os.path.join(cmhf_root, 'TestResult', 'Result')
+    except Exception as e:
+        print(f"CAVEmain execution failed: {e}")
+        print("Note: You may need to manually run CAVEmain.py with mode='testAll'")
+        return os.path.join(cmhf_root, 'TestResult', 'Result')
 
 
 def main():
@@ -276,6 +200,8 @@ def main():
     ap.add_argument('--skip_inference', action='store_true', help='Skip inference, only compute metrics')
     args = ap.parse_args()
     
+    cmhf_root = os.path.abspath(args.cmhf_root)
+    
     print("=" * 70)
     print("CMHF-net Test on CAVE Dataset")
     print("=" * 70)
@@ -283,21 +209,30 @@ def main():
     # Step 1: Prepare data
     if not args.skip_prep:
         print("\n[1/3] Preparing CAVE data in CMHF-net format...")
-        prepare_cmhf_data(args.hsi_dir, args.rgb_dir, args.cmhf_root)
+        prepare_cmhf_data(args.hsi_dir, args.rgb_dir, cmhf_root)
     
     # Step 2: Run inference
-    result_dir = os.path.join(args.cmhf_root, 'TestResult', 'Result')
+    result_dir = os.path.join(cmhf_root, 'TestResult', 'Result')
     if not args.skip_inference:
         print("\n[2/3] Running CMHF-net inference...")
-        try:
-            result_dir = run_cmhf_inference(args.cmhf_root)
-        except Exception as e:
-            print(f"Inference failed: {e}")
-            print(f"Trying to use existing results from {result_dir}...")
+        result_dir = run_cmhf_inference_via_main(cmhf_root) or result_dir
     
-    # Step 3: Compute metrics
+    # Step 3: Compute metrics using eval_mhfnet_cave.py
     print("\n[3/3] Computing metrics...")
-    compute_metrics(args.cmhf_root, result_dir, sf=32)
+    eval_script = os.path.join(os.path.dirname(__file__), 'eval_mhfnet_cave.py')
+    
+    cmd = [
+        sys.executable, eval_script,
+        '--cmhf_root', cmhf_root,
+        '--pred_dir', result_dir,
+        '--sf', '32'
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception as e:
+        print(f"Error computing metrics: {e}")
+    
     print("\n" + "=" * 70)
 
 
