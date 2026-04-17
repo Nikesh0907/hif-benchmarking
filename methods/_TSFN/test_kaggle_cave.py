@@ -217,9 +217,20 @@ def main():
             pred_np = pred[0].permute(1, 2, 0).cpu().numpy()  # CHW -> HWC
             gt_np = hsi_gt[0].permute(1, 2, 0).cpu().numpy()  # CHW -> HWC
             
+            # Debug: Print value ranges (only on first iteration)
+            if i == 0:
+                print(f"\n  DEBUG: Data ranges before normalize01()")
+                print(f"    Pred: min={pred_np.min():.6f}, max={pred_np.max():.6f}, mean={pred_np.mean():.6f}")
+                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}")
+            
             # Normalize
             pred_norm = normalize01(pred_np).astype(np.float32)
             gt_norm = normalize01(gt_np).astype(np.float32)
+            
+            if i == 0:
+                print(f"  DEBUG: Data ranges after normalize01()")
+                print(f"    Pred: min={pred_norm.min():.6f}, max={pred_norm.max():.6f}, mean={pred_norm.mean():.6f}")
+                print(f"    GT:   min={gt_norm.min():.6f}, max={gt_norm.max():.6f}, mean={gt_norm.mean():.6f}\n")
             
             # Compute metrics
             m = compute_metrics(gt_norm, pred_norm, ratio=args.sf)
