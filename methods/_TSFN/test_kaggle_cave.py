@@ -186,7 +186,13 @@ def main():
     
     checkpoint = torch.load(args.weights, map_location=device)
     model = Net(HSI_num_residuals=6, RGB_num_residuals=6)
-    model.load_state_dict(checkpoint['state_dict'])
+    
+    # Handle DataParallel checkpoint (remove 'module.' prefix if present)
+    state_dict = checkpoint['state_dict']
+    if any(k.startswith('module.') for k in state_dict.keys()):
+        state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
+    
+    model.load_state_dict(state_dict)
     model = model.to(device).eval()
     print(f"✓ Model loaded from {args.weights}")
     
