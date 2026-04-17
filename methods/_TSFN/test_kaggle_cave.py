@@ -35,6 +35,7 @@ sys.path.insert(0, str(TSFN_ROOT))
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as transforms
 import time
 import tifffile as tiff
 
@@ -44,7 +45,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from tools.hif_metrics import compute_metrics, normalize01
 
 from model import Net
-from dataset import get_lrhsi
+from dataset import get_lrhsi, Dataset_cave_test
 
 
 def load_mat_auto(path):
@@ -121,33 +122,9 @@ def prepare_tsfn_data(hsi_dir, rgb_dir, tsfn_data_dir):
     print(f"Prepared {len(hsi_files)} TSFN test images in {tsfn_data_dir}")
 
 
-class TsfnTestDataset(Dataset):
-    """TSFN test dataset from .tif stacks."""
-    
-    def __init__(self, tif_dir, degradation_mode):
-        self.tif_list = sorted(glob.glob(os.path.join(tif_dir, '*.tif')))
-        self.degradation_mode = degradation_mode
-    
-    def __getitem__(self, idx):
-        """Load stacked .tif and return (lr_hsi, rgb, hr_hsi) as tensors."""
-        img = tiff.imread(self.tif_list[idx])  # (34, H, W) uint8
-        img = img.astype(np.float32) / 255.0  # Normalize to [0, 1]
-        
-        hsi = img[:31, :, :]  # (31, H, W)
-        rgb = img[31:34, :, :]  # (3, H, W)
-        
-        # Create LR-HSI via degradation
-        lr_hsi = get_lrhsi(hsi, self.degradation_mode)  # (31, H/sf, W/sf)
-        
-        # Convert to tensors (model expects CHW)
-        hsi_tensor = torch.from_numpy(hsi).float()
-        rgb_tensor = torch.from_numpy(rgb).float()
-        lr_hsi_tensor = torch.from_numpy(lr_hsi).float()
-        
-        return lr_hsi_tensor, rgb_tensor, hsi_tensor
-    
-    def __len__(self):
-        return len(self.tif_list)
+class TsfnTestDataset(Dataset_cave_test):
+    """Wrapper around Dataset_cave_test to handle Kaggle data format."""
+    pass  # Inherits from dataset.py's Dataset_cave_test
 
 
 def main():
@@ -210,30 +187,21 @@ def main():
             hsi_gt = hsi_gt.to(device)
             
             start = time.time()
-            pred = model(lr_hsi, rgb)  # Output: (B, 31, H, W)
+            pred = model(lr_hsi, rgb)  # Output: (B, 31, H, W) in [0, 1]
             elapsed = time.time() - start
             
             # Convert to numpy for metric computation
-            pred_np = pred[0].permute(1, 2, 0).cpu().numpy()  # CHW -> HWC
-            gt_np = hsi_gt[0].permute(1, 2, 0).cpu().numpy()  # CHW -> HWC
+            # Tensors are already [0, 1] from ToTensor() transform
+            pred_np = pred[0].permute(1, 2, 0).cpu().numpy()  # CHW -> HWC, range [0, 1]
+            gt_np = hsi_gt[0].permute(1, 2, 0).cpu().numpy()   # CHW -> HWC, range [0, 1]
             
-            # Debug: Print value ranges (only on first iteration)
-            if i == 0:
-                print(f"\n  DEBUG: Data ranges before normalize01()")
-                print(f"    Pred: min={pred_np.min():.6f}, max={pred_np.max():.6f}, mean={pred_np.mean():.6f}")
-                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}")
-            
-            # Normalize
-            pred_norm = normalize01(pred_np).astype(np.float32)
-            gt_norm = normalize01(gt_np).astype(np.float32)
-            
-            # Ensure both are in [0, 1] and at same scale
-            # (GT may be clipped at <1.0 due to input data range, so clip both to [0,1])
-            pred_norm = np.clip(pred_norm, 0.0, 1.0)
-            gt_norm = np.clip(gt_norm, 0.0, 1.0)
+            # Both are already in [0, 1] from transforms.ToTensor()
+            # Just ensure they're properly clipped/matched in scale
+            pred_norm = np.clip(pred_np, 0.0, 1.0).astype(np.float32)
+            gt_norm = np.clip(gt_np, 0.0, 1.0).astype(np.float32)
             
             if i == 0:
-                print(f"  DEBUG: Data ranges after normalize01() + clipping")
+                print(f"\n  DEBUG: Tensor ranges (from ToTensor())")
                 print(f"    Pred: min={pred_norm.min():.6f}, max={pred_norm.max():.6f}, mean={pred_norm.mean():.6f}")
                 print(f"    GT:   min={gt_norm.min():.6f}, max={gt_norm.max():.6f}, mean={gt_norm.mean():.6f}\n")
             
