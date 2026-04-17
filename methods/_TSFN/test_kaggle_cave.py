@@ -227,8 +227,13 @@ def main():
             pred_norm = normalize01(pred_np).astype(np.float32)
             gt_norm = normalize01(gt_np).astype(np.float32)
             
+            # Ensure both are in [0, 1] and at same scale
+            # (GT may be clipped at <1.0 due to input data range, so clip both to [0,1])
+            pred_norm = np.clip(pred_norm, 0.0, 1.0)
+            gt_norm = np.clip(gt_norm, 0.0, 1.0)
+            
             if i == 0:
-                print(f"  DEBUG: Data ranges after normalize01()")
+                print(f"  DEBUG: Data ranges after normalize01() + clipping")
                 print(f"    Pred: min={pred_norm.min():.6f}, max={pred_norm.max():.6f}, mean={pred_norm.mean():.6f}")
                 print(f"    GT:   min={gt_norm.min():.6f}, max={gt_norm.max():.6f}, mean={gt_norm.mean():.6f}\n")
             
