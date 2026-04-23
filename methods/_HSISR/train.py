@@ -142,21 +142,21 @@ class HSIPatchDataset(torch.utils.data.Dataset):
         patch = self.patches[idx]
         
         if np.random.rand() > 0.5:
-            patch['gt'] = np.flipud(patch['gt'])
-            patch['lr_hsi'] = np.flipud(patch['lr_hsi'])
-            patch['lr_hsi_up'] = np.flipud(patch['lr_hsi_up'])
-            patch['rgb'] = np.flipud(patch['rgb'])
+            patch['gt'] = np.flipud(patch['gt']).copy()
+            patch['lr_hsi'] = np.flipud(patch['lr_hsi']).copy()
+            patch['lr_hsi_up'] = np.flipud(patch['lr_hsi_up']).copy()
+            patch['rgb'] = np.flipud(patch['rgb']).copy()
         
         if np.random.rand() > 0.5:
-            patch['gt'] = np.fliplr(patch['gt'])
-            patch['lr_hsi'] = np.fliplr(patch['lr_hsi'])
-            patch['lr_hsi_up'] = np.fliplr(patch['lr_hsi_up'])
-            patch['rgb'] = np.fliplr(patch['rgb'])
+            patch['gt'] = np.fliplr(patch['gt']).copy()
+            patch['lr_hsi'] = np.fliplr(patch['lr_hsi']).copy()
+            patch['lr_hsi_up'] = np.fliplr(patch['lr_hsi_up']).copy()
+            patch['rgb'] = np.fliplr(patch['rgb']).copy()
         
-        gt = torch.from_numpy(patch['gt'].transpose(2, 0, 1))
-        lr_hsi = torch.from_numpy(patch['lr_hsi'].transpose(2, 0, 1))
-        lr_hsi_up = torch.from_numpy(patch['lr_hsi_up'].transpose(2, 0, 1))
-        rgb = torch.from_numpy(patch['rgb'].transpose(2, 0, 1))
+        gt = torch.from_numpy(patch['gt'].transpose(2, 0, 1).copy())
+        lr_hsi = torch.from_numpy(patch['lr_hsi'].transpose(2, 0, 1).copy())
+        lr_hsi_up = torch.from_numpy(patch['lr_hsi_up'].transpose(2, 0, 1).copy())
+        rgb = torch.from_numpy(patch['rgb'].transpose(2, 0, 1).copy())
         
         return lr_hsi, lr_hsi_up, gt, rgb
 
