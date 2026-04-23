@@ -39,11 +39,18 @@ from dataset import get_lrhsi
 
 
 def load_mat_kaggle(path):
-    """Load Kaggle CAVE .mat or .tif file (auto-detect key)."""
+    """Load Kaggle CAVE .mat or .tif file (auto-detect format and orientation)."""
     if path.endswith('.tif'):
         # Load .tif file directly
         import tifffile as tiff
         img = tiff.imread(path).astype(np.float32)
+        
+        # Auto-detect format: could be (34, H, W) or (H, W, 34) or (H, W, 31)
+        if img.ndim == 3:
+            # Identify which dimension is the spectral dimension
+            if img.shape[0] in [31, 34]:  # First dim is bands
+                img = img.transpose(1, 2, 0)  # Convert (B, H, W) -> (H, W, B)
+        
         img_max = img.max()
         if img_max > 1.0:
             img = img / img_max
@@ -66,6 +73,10 @@ def load_mat_kaggle(path):
         raise ValueError(f"No suitable key found in {path}")
     
     arr = np.asarray(arr, dtype=np.float32)
+    
+    # Auto-detect orientation: (B, H, W) or (H, W, B)
+    if arr.ndim == 3 and arr.shape[0] < min(arr.shape[1], arr.shape[2]):
+        arr = arr.transpose(1, 2, 0)  # (B, H, W) -> (H, W, B)
     
     # Normalize to [0, 1]
     arr_max = float(np.nanmax(arr)) if arr.size else 1.0
@@ -138,6 +149,20 @@ def main():
             
             # Load HSI and RGB
             hsi_full = load_mat_kaggle(hsi_path)  # (H, W, 31) in [0, 1]
+            
+            # CRITICAL VALIDATION on first iteration
+            if idx == 0:
+                print(f"\n⚠️  DATA VALIDATION:")
+                print(f"    HSI file '{name}' shape: {hsi_full.shape}")
+                if hsi_full.ndim >= 3 and hsi_full.shape[2] == 3:
+                    print(f"    ❌ ERROR: Loaded RGB (3 channels) instead of HSI (31 channels)!")
+                    print(f"    ❌ Are your HSI_DIR and RGB_DIR arguments SWAPPED?")
+                    return
+                elif hsi_full.ndim >= 3 and hsi_full.shape[2] == 31:
+                    print(f"    ✅ OK: Loaded HSI with 31 channels")
+                else:
+                    print(f"    ⚠️  WARNING: Got {hsi_full.shape[2] if hsi_full.ndim >= 3 else '?'} channels (expected 31)")
+            
             if hsi_full.ndim == 4:
                 hsi_full = hsi_full[0]
             if hsi_full.shape[2] > 31:
@@ -186,21 +211,13 @@ def main():
             pred_np = np.clip(pred_np, 0.0, 1.0)
             gt_np = np.clip(gt_np, 0.0, 1.0)
             
-            # CRITICAL FIX: Rescale both to use the maximum of GT as reference
-            # (GT may be <1.0 due to TIF quantization; ERGAS is sensitive to this)
-            gt_max = gt_np.max()
-            if gt_max < 1.0 and gt_max > 0:
-                # Rescale pred to match GT's dynamic range
-                pred_np = pred_np * (gt_max / pred_np.max()) if pred_np.max() > 0 else pred_np
-            
             # Debug output on first image
             if idx == 0:
-                print(f"\n  DEBUG: Data ranges (BEFORE fix)")
+                print(f"\n  DEBUG: Data ranges (before compute_metrics)")
                 print(f"    Pred: min={pred_np.min():.6f}, max={pred_np.max():.6f}, mean={pred_np.mean():.6f}")
-                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}")
-                print(f"       GT max rescaling factor: {gt_max:.6f}\n")
+                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}\n")
             
-            # Compute metrics
+            # Compute metrics - let compute_metrics handle normalization
             m = compute_metrics(gt_np, pred_np, ratio=args.sf)
             for k in results:
                 results[k].append(m[k])
