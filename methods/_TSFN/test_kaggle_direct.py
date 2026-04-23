@@ -186,11 +186,19 @@ def main():
             pred_np = np.clip(pred_np, 0.0, 1.0)
             gt_np = np.clip(gt_np, 0.0, 1.0)
             
+            # CRITICAL FIX: Rescale both to use the maximum of GT as reference
+            # (GT may be <1.0 due to TIF quantization; ERGAS is sensitive to this)
+            gt_max = gt_np.max()
+            if gt_max < 1.0 and gt_max > 0:
+                # Rescale pred to match GT's dynamic range
+                pred_np = pred_np * (gt_max / pred_np.max()) if pred_np.max() > 0 else pred_np
+            
             # Debug output on first image
             if idx == 0:
-                print(f"\n  DEBUG: Data ranges")
+                print(f"\n  DEBUG: Data ranges (BEFORE fix)")
                 print(f"    Pred: min={pred_np.min():.6f}, max={pred_np.max():.6f}, mean={pred_np.mean():.6f}")
-                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}\n")
+                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}")
+                print(f"       GT max rescaling factor: {gt_max:.6f}\n")
             
             # Compute metrics
             m = compute_metrics(gt_np, pred_np, ratio=args.sf)
