@@ -199,14 +199,16 @@ def main():
     parser.add_argument('--patch_size', type=int, default=64, help='Patch size')
     parser.add_argument('--save_dir', type=str, default='./checkpoints', help='Save dir')
     parser.add_argument('--cuda', type=int, default=1, help='Use CUDA')
+    parser.add_argument('--gpus', type=int, default=1, help='Number of GPUs to use (data-parallel)')
     args = parser.parse_args()
     
     print("=" * 70)
-    print(f"HSISR Training (SF={args.sf}, Epochs={args.epochs})")
+    print(f"HSISR Training (SF={args.sf}, Epochs={args.epochs}, GPUs={args.gpus})")
     print("=" * 70)
     
     device = torch.device('cuda' if args.cuda and torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}\n")
+    num_gpus = min(args.gpus, torch.cuda.device_count()) if args.cuda else 1
+    print(f"Device: {device}, Using {num_gpus} GPU(s)\n")
     
     os.makedirs(args.save_dir, exist_ok=True)
     
@@ -233,17 +235,24 @@ def main():
     model = DeepShare(n_subs=8, n_ovls=2, n_colors=31, n_blocks=3, n_feats=256,
                       n_scale=args.sf, res_scale=0.1, use_share=True, conv=default_conv)
     model = model.to(device)
-    print(f"Model: DeepShare(sf={args.sf}, feats=256, blocks=3)\n")
+    
+    # Multi-GPU data parallel (DBIN-inspired approach)
+    if num_gpus > 1:
+        model = torch.nn.DataParallel(model, device_ids=list(range(num_gpus)))
+        print(f"Model: DeepShare(sf={args.sf}, feats=256, blocks=3) - DataParallel on {num_gpus} GPUs\n")
+    else:
+        print(f"Model: DeepShare(sf={args.sf}, feats=256, blocks=3)\n")
     
     criterion = HybridLoss(spatial_tv=True, spectral_tv=True)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=0)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     
     print("[3/3] Training...")
-    print(f"Batch size: {args.batch_size}, LR: {args.lr}\n")
+    print(f"Batch size: {args.batch_size}, LR: {args.lr}, Batches/epoch: {len(dataloader)}\n")
     
     start_time = time.time()
     best_loss = float('inf')
+    loss_history = []
     
     for epoch in range(args.epochs):
         avg_loss = train_epoch(model, dataloader, optimizer, criterion, device)
@@ -253,7 +262,10 @@ def main():
         elapsed = (time.time() - start_time) / 60
         eta = elapsed / (epoch + 1) * (args.epochs - epoch - 1)
         
-        print(f"Epoch {epoch+1:3d}/{args.epochs}: Loss={avg_loss:.6f}, LR={current_lr:.2e} ({elapsed:.1f}min, ETA {eta:.1f}min)")
+        loss_history.append(avg_loss)
+        loss_trend = "↓" if avg_loss < best_loss else "↑"
+        
+        print(f"Epoch {epoch+1:3d}/{args.epochs}: Loss={avg_loss:.6f} {loss_trend}, LR={current_lr:.2e} ({elapsed:.1f}min, ETA {eta:.1f}min)")
         
         if (epoch + 1) % 10 == 0 or avg_loss < best_loss:
             ckpt_path = os.path.join(args.save_dir, f'CAVE_DeepShare_SF{args.sf}_epoch{epoch+1}.pth')
@@ -265,8 +277,29 @@ def main():
     total_time = (time.time() - start_time) / 3600
     print("\n" + "=" * 70)
     print(f"Training complete! Time: {total_time:.2f} hours")
-    print(f"Best checkpoint: {args.save_dir}/CAVE_DeepShare_SF{args.sf}_epoch*.pth")
     print("=" * 70)
+    
+    # Validation: Check if training was successful
+    print("\n[VALIDATION] Training Status:")
+    initial_loss = loss_history[0]
+    final_loss = loss_history[-1]
+    loss_reduction = ((initial_loss - final_loss) / initial_loss) * 100
+    
+    print(f"  Initial Loss:    {initial_loss:.6f}")
+    print(f"  Final Loss:      {final_loss:.6f}")
+    print(f"  Loss Reduction:  {loss_reduction:.1f}%")
+    
+    if loss_reduction > 50:
+        print(f"  ✅ TRAINING SUCCESSFUL! Loss reduced by {loss_reduction:.1f}%")
+        print(f"  Expected PSNR range: 37-40 dB (SF=8)")
+    elif loss_reduction > 20:
+        print(f"  ⚠️  TRAINING OK but could be better. Loss reduced by {loss_reduction:.1f}%")
+        print(f"  Expected PSNR range: 34-38 dB (lower end)")
+    else:
+        print(f"  ❌ TRAINING FAILED! Loss only reduced by {loss_reduction:.1f}%")
+        print(f"  Check if data is loading correctly or learning rate is too low")
+    
+    print(f"\nBest checkpoint: {args.save_dir}/CAVE_DeepShare_SF{args.sf}_*.pth")
 
 
 if __name__ == '__main__':
