@@ -38,6 +38,86 @@ from model import Net
 from dataset import get_lrhsi
 
 
+# Import DBIN's proper metric functions (more reliable than sewar)
+def compute_sam(image1, image2):
+    """Compute SAM in degrees between spectral vectors."""
+    image1 = np.asarray(image1)
+    image2 = np.asarray(image2)
+    if image1.ndim == 4:
+        image1 = image1[0]
+    if image2.ndim == 4:
+        image2 = image2[0]
+    
+    # Expects HWC format
+    if image1.ndim == 3 and image1.shape[0] < image1.shape[2]:  # CHW format
+        image1 = image1.transpose(1, 2, 0)
+    if image2.ndim == 3 and image2.shape[0] < image2.shape[2]:  # CHW format
+        image2 = image2.transpose(1, 2, 0)
+    
+    h, w, c = image1.shape
+    image1 = np.reshape(image1, (h * w, c))
+    image2 = np.reshape(image2, (h * w, c))
+    mole = np.sum(np.multiply(image1, image2), axis=1)
+    image1_norm = np.sqrt(np.sum(np.square(image1), axis=1))
+    image2_norm = np.sqrt(np.sum(np.square(image2), axis=1))
+    deno = np.multiply(image1_norm, image2_norm)
+    sam = np.rad2deg(np.arccos((mole + 1e-11) / (deno + 1e-11)))
+    return np.mean(sam)
+
+
+def compute_ergas(mse, out, sf=8):
+    """Compute ERGAS metric from MSE map and output."""
+    out = np.asarray(out)
+    if out.ndim == 4:
+        out = out[0]
+    
+    # Expects HWC format
+    if out.ndim == 3 and out.shape[0] < out.shape[2]:  # CHW format
+        out = out.transpose(1, 2, 0)
+    
+    h, w, c = out.shape
+    out = np.reshape(out, (h * w, c))
+    out_mean = np.mean(out, axis=0)
+    mse = np.reshape(mse, (c, 1))
+    out_mean = np.reshape(out_mean, (c, 1))
+    ergas = 100.0 / float(sf) * np.sqrt(np.mean(mse / (out_mean ** 2 + 1e-12)))
+    return ergas
+
+
+def compute_psnr(image1, image2, data_range=1.0):
+    """Compute PSNR."""
+    image1 = np.asarray(image1, dtype=np.float32)
+    image2 = np.asarray(image2, dtype=np.float32)
+    mse = np.mean((image1 - image2) ** 2)
+    if mse == 0:
+        return float('inf')
+    psnr = 10.0 * np.log10((data_range ** 2) / mse)
+    return psnr
+
+
+def compute_ssim(image1, image2, data_range=1.0, win_size=11):
+    """Compute SSIM per-band and average."""
+    from skimage.metrics import structural_similarity
+    image1 = np.asarray(image1)
+    image2 = np.asarray(image2)
+    if image1.ndim == 4:
+        image1 = image1[0]
+    if image2.ndim == 4:
+        image2 = image2[0]
+    
+    # Expects HWC format
+    if image1.ndim == 3 and image1.shape[0] < image1.shape[2]:  # CHW format
+        image1 = image1.transpose(1, 2, 0)
+    if image2.ndim == 3 and image2.shape[0] < image2.shape[2]:  # CHW format
+        image2 = image2.transpose(1, 2, 0)
+    
+    h, w, c = image1.shape
+    ssim_total = 0.0
+    for i in range(c):
+        ssim_total += structural_similarity(image1[:, :, i], image2[:, :, i], data_range=data_range)
+    return ssim_total / c
+
+
 def load_mat_kaggle(path):
     """Load Kaggle CAVE .mat or .tif file (auto-detect format and orientation)."""
     if path.endswith('.tif'):
@@ -211,26 +291,22 @@ def main():
             pred_np = np.clip(pred_np, 0.0, 1.0)
             gt_np = np.clip(gt_np, 0.0, 1.0)
             
-            # CRITICAL: Rescale both to same max before computing metrics
-            # ERGAS is scale-sensitive: if GT.max=0.958 and Pred.max=1.0, ERGAS explodes
-            gt_max = gt_np.max()
-            pred_max = pred_np.max()
-            global_max = max(gt_max, pred_max)
-            
-            if global_max > 0:
-                # Rescale to use 1.0 as reference
-                gt_np = (gt_np / global_max).astype(np.float32)
-                pred_np = (pred_np / global_max).astype(np.float32)
-            
             # Debug output on first image
             if idx == 0:
-                print(f"\n  DEBUG: Data ranges (before compute_metrics)")
-                print(f"    Pred: min={pred_np.min():.6f}, max={pred_np.max():.6f}, mean={pred_np.mean():.6f}")
-                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}")
-                print(f"    (Rescaled with global_max={global_max:.6f})\n")
+                print(f"\n  DEBUG: Data ranges (HWC format)")
+                print(f"    Pred: shape={pred_np.shape}, min={pred_np.min():.6f}, max={pred_np.max():.6f}")
+                print(f"    GT:   shape={gt_np.shape}, min={gt_np.min():.6f}, max={gt_np.max():.6f}\n")
             
-            # Compute metrics
-            m = compute_metrics(gt_np, pred_np, ratio=args.sf)
+            # Compute metrics using DBIN-style functions (proven to work correctly)
+            psnr = compute_psnr(gt_np, pred_np, data_range=1.0)
+            sam = compute_sam(gt_np, pred_np)
+            ssim = compute_ssim(gt_np, pred_np, data_range=1.0)
+            
+            # ERGAS needs MSE map per-channel
+            mse_per_channel = np.mean((gt_np - pred_np) ** 2, axis=(0, 1))  # (C,)
+            ergas = compute_ergas(mse_per_channel, pred_np, sf=args.sf)
+            
+            m = {'psnr': psnr, 'sam': sam, 'ergas': ergas, 'ssim': ssim}
             for k in results:
                 results[k].append(m[k])
             
