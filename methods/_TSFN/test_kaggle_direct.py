@@ -211,13 +211,25 @@ def main():
             pred_np = np.clip(pred_np, 0.0, 1.0)
             gt_np = np.clip(gt_np, 0.0, 1.0)
             
+            # CRITICAL: Rescale both to same max before computing metrics
+            # ERGAS is scale-sensitive: if GT.max=0.958 and Pred.max=1.0, ERGAS explodes
+            gt_max = gt_np.max()
+            pred_max = pred_np.max()
+            global_max = max(gt_max, pred_max)
+            
+            if global_max > 0:
+                # Rescale to use 1.0 as reference
+                gt_np = (gt_np / global_max).astype(np.float32)
+                pred_np = (pred_np / global_max).astype(np.float32)
+            
             # Debug output on first image
             if idx == 0:
                 print(f"\n  DEBUG: Data ranges (before compute_metrics)")
                 print(f"    Pred: min={pred_np.min():.6f}, max={pred_np.max():.6f}, mean={pred_np.mean():.6f}")
-                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}\n")
+                print(f"    GT:   min={gt_np.min():.6f}, max={gt_np.max():.6f}, mean={gt_np.mean():.6f}")
+                print(f"    (Rescaled with global_max={global_max:.6f})\n")
             
-            # Compute metrics - let compute_metrics handle normalization
+            # Compute metrics
             m = compute_metrics(gt_np, pred_np, ratio=args.sf)
             for k in results:
                 results[k].append(m[k])
