@@ -39,7 +39,17 @@ from dataset import get_lrhsi
 
 
 def load_mat_kaggle(path):
-    """Load Kaggle CAVE .mat file (auto-detect key)."""
+    """Load Kaggle CAVE .mat or .tif file (auto-detect key)."""
+    if path.endswith('.tif'):
+        # Load .tif file directly
+        import tifffile as tiff
+        img = tiff.imread(path).astype(np.float32)
+        img_max = img.max()
+        if img_max > 1.0:
+            img = img / img_max
+        return np.clip(img, 0.0, 1.0)
+    
+    # Load .mat file
     mat_data = sio.loadmat(path)
     
     # Try common keys used in Kaggle CAVE
@@ -102,8 +112,22 @@ def main():
     print(f"\n[2/2] Running inference (SF={args.sf}, degradation_mode={degradation_mode})...")
     
     hsi_files = sorted(glob.glob(os.path.join(args.hsi_dir, '*.mat')))
+    
+    # Fallback: check for subdirectories or .tif files
     if not hsi_files:
-        print(f"ERROR: No .mat files found in {args.hsi_dir}")
+        print(f"⚠️  No .mat files in {args.hsi_dir}, checking subdirectories...")
+        hsi_files = sorted(glob.glob(os.path.join(args.hsi_dir, '*/*.mat')))
+    
+    if not hsi_files:
+        print(f"⚠️  Still no .mat files, checking for .tif files...")
+        hsi_files = sorted(glob.glob(os.path.join(args.hsi_dir, '*.tif')))
+        hsi_files += sorted(glob.glob(os.path.join(args.hsi_dir, '*/*.tif')))
+    
+    if not hsi_files:
+        print(f"\n❌ ERROR: No data files (.mat or .tif) found in {args.hsi_dir}")
+        print(f"Directory contents:")
+        import subprocess
+        subprocess.run(['ls', '-lh', args.hsi_dir], capture_output=False)
         return
     
     results = {'psnr': [], 'ssim': [], 'sam': [], 'ergas': []}
