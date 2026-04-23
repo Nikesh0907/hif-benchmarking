@@ -200,6 +200,7 @@ def main():
     parser.add_argument('--save_dir', type=str, default='./checkpoints', help='Save dir')
     parser.add_argument('--cuda', type=int, default=1, help='Use CUDA')
     parser.add_argument('--gpus', type=int, default=1, help='Number of GPUs to use (data-parallel)')
+    parser.add_argument('--resume', action='store_true', help='Resume from latest checkpoint')
     args = parser.parse_args()
     
     print("=" * 70)
@@ -251,26 +252,59 @@ def main():
     print(f"Batch size: {args.batch_size}, LR: {args.lr}, Batches/epoch: {len(dataloader)}\n")
     
     start_time = time.time()
+    start_epoch = 0
     best_loss = float('inf')
     loss_history = []
     
-    for epoch in range(args.epochs):
+    # Resume from checkpoint if requested
+    checkpoint_file = os.path.join(args.save_dir, 'training_state.pth')
+    if args.resume and os.path.exists(checkpoint_file):
+        print(f"[RESUME] Loading checkpoint: {checkpoint_file}")
+        ckpt = torch.load(checkpoint_file, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        start_epoch = ckpt['epoch']
+        best_loss = ckpt['best_loss']
+        loss_history = ckpt['loss_history']
+        # Adjust start_time to preserve elapsed time
+        start_time = time.time() - (ckpt['elapsed_time'] * 60)
+        print(f"[RESUME] Resumed from epoch {start_epoch+1}, Loss={ckpt['last_loss']:.6f}, Best Loss={best_loss:.6f}\n")
+    elif args.resume:
+        print(f"[RESUME] No checkpoint found, starting fresh\n")
+    
+    for epoch in range(start_epoch, args.epochs):
         avg_loss = train_epoch(model, dataloader, optimizer, criterion, device)
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         
         elapsed = (time.time() - start_time) / 60
-        eta = elapsed / (epoch + 1) * (args.epochs - epoch - 1)
+        eta = elapsed / (epoch - start_epoch + 1) * (args.epochs - epoch - 1)
         
         loss_history.append(avg_loss)
         loss_trend = "↓" if avg_loss < best_loss else "↑"
         
         print(f"Epoch {epoch+1:3d}/{args.epochs}: Loss={avg_loss:.6f} {loss_trend}, LR={current_lr:.2e} ({elapsed:.1f}min, ETA {eta:.1f}min)")
         
+        # Save checkpoint every epoch (for resume capability)
+        if (epoch + 1) % 1 == 0:
+            state_checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'loss_history': loss_history,
+                'best_loss': best_loss,
+                'last_loss': avg_loss,
+                'elapsed_time': elapsed
+            }
+            torch.save(state_checkpoint, checkpoint_file)
+        
+        # Save periodic checkpoints for testing
         if (epoch + 1) % 10 == 0 or avg_loss < best_loss:
             ckpt_path = os.path.join(args.save_dir, f'CAVE_DeepShare_SF{args.sf}_epoch{epoch+1}.pth')
             torch.save(model.state_dict(), ckpt_path)
-            print(f"  ✓ Saved: {ckpt_path}")
+            print(f"  ✓ Saved periodic: {ckpt_path}")
             if avg_loss < best_loss:
                 best_loss = avg_loss
     
@@ -281,6 +315,9 @@ def main():
     
     # Validation: Check if training was successful
     print("\n[VALIDATION] Training Status:")
+    if start_epoch > 0:
+        print(f"[INFO] Resumed from epoch {start_epoch+1}")
+        print(f"[INFO] Total epochs trained this session: {args.epochs - start_epoch}")
     initial_loss = loss_history[0]
     final_loss = loss_history[-1]
     loss_reduction = ((initial_loss - final_loss) / initial_loss) * 100
