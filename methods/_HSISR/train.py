@@ -200,6 +200,7 @@ def main():
     parser.add_argument('--save_dir', type=str, default='./checkpoints', help='Save dir')
     parser.add_argument('--cuda', type=int, default=1, help='Use CUDA')
     parser.add_argument('--gpus', type=int, default=1, help='Number of GPUs to use (data-parallel)')
+    parser.add_argument('--save_every', type=int, default=10, help='Save checkpoint every N epochs')
     parser.add_argument('--resume', action='store_true', help='Resume from latest checkpoint')
     args = parser.parse_args()
     
@@ -300,18 +301,27 @@ def main():
             }
             torch.save(state_checkpoint, checkpoint_file)
         
-        # Save periodic checkpoints for testing
-        if (epoch + 1) % 10 == 0 or avg_loss < best_loss:
+        # Save periodic checkpoints every N epochs
+        if (epoch + 1) % args.save_every == 0:
             ckpt_path = os.path.join(args.save_dir, f'CAVE_DeepShare_SF{args.sf}_epoch{epoch+1}.pth')
             torch.save(model.state_dict(), ckpt_path)
-            print(f"  ✓ Saved periodic: {ckpt_path}")
-            if avg_loss < best_loss:
-                best_loss = avg_loss
+            print(f"  ✓ Saved (every {args.save_every} epochs): {ckpt_path}")
+        
+        # Save best model
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_model_path = os.path.join(args.save_dir, f'CAVE_DeepShare_SF{args.sf}_BEST.pth')
+            torch.save(model.state_dict(), best_model_path)
+            print(f"  ⭐ NEW BEST! Loss={avg_loss:.6f} → Saved: BEST.pth")
     
     total_time = (time.time() - start_time) / 3600
     print("\n" + "=" * 70)
     print(f"Training complete! Time: {total_time:.2f} hours")
     print("=" * 70)
+    print(f"\n[CHECKPOINTS]")
+    print(f"  Best model:    {args.save_dir}/CAVE_DeepShare_SF{args.sf}_BEST.pth")
+    print(f"  Periodic:      {args.save_dir}/CAVE_DeepShare_SF{args.sf}_epoch*.pth")
+    print(f"  Resume state:  {args.save_dir}/training_state.pth (~20MB)")
     
     # Validation: Check if training was successful
     print("\n[VALIDATION] Training Status:")
@@ -336,7 +346,7 @@ def main():
         print(f"  ❌ TRAINING FAILED! Loss only reduced by {loss_reduction:.1f}%")
         print(f"  Check if data is loading correctly or learning rate is too low")
     
-    print(f"\nBest checkpoint: {args.save_dir}/CAVE_DeepShare_SF{args.sf}_*.pth")
+    print(f"\nBest checkpoint saved separately: CAVE_DeepShare_SF{args.sf}_BEST.pth")
 
 
 if __name__ == '__main__':
