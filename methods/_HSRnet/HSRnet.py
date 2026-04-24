@@ -14,16 +14,18 @@ except ImportError:
 
 try:
     import tensorflow.contrib.layers as ly  # TF1.x
-except Exception:  # TF2.x (no contrib)
+except Exception:  # TF2.x / Keras 3 (no contrib)
     class _CompatLayers:
+        _conv_counter = 0
+        
         @staticmethod
         def l2_regularizer(scale):
-            return tf.keras.regularizers.l2(scale)
-
+            return scale  # Return scale, will be handled in get_reg_loss
+        
         @staticmethod
         def variance_scaling_initializer():
             return tf.keras.initializers.VarianceScaling()
-
+        
         @staticmethod
         def conv2d(
             inputs,
@@ -35,18 +37,55 @@ except Exception:  # TF2.x (no contrib)
             weights_initializer=None,
             **_kwargs,
         ):
-            # Mirror the TF contrib signature used in this repo.
-            return tf.compat.v1.layers.conv2d(
-                inputs,
-                filters=num_outputs,
-                kernel_size=kernel_size,
-                strides=stride,
-                padding='SAME',
-                activation=activation_fn,
-                kernel_initializer=weights_initializer,
-                kernel_regularizer=weights_regularizer,
+            """Conv2d using tf.nn.conv2d (Keras 3 compatible)."""
+            if isinstance(kernel_size, int):
+                kernel_size = [kernel_size, kernel_size]
+            
+            # Create variable name
+            _CompatLayers._conv_counter += 1
+            conv_name = f"conv2d_{_CompatLayers._conv_counter}"
+            
+            # Get input shape
+            input_shape = inputs.get_shape().as_list()
+            in_channels = input_shape[-1]
+            
+            # Create initializer
+            if weights_initializer is None:
+                weights_initializer = tf.keras.initializers.VarianceScaling()
+            
+            # Create kernel variable
+            kernel_shape = [kernel_size[0], kernel_size[1], in_channels, num_outputs]
+            kernel = tf.compat.v1.get_variable(
+                f"{conv_name}_kernel",
+                shape=kernel_shape,
+                initializer=weights_initializer,
+                dtype=tf.float32
             )
-
+            
+            # Create bias variable  
+            bias = tf.compat.v1.get_variable(
+                f"{conv_name}_bias",
+                shape=[num_outputs],
+                initializer=tf.zeros_initializer(),
+                dtype=tf.float32
+            )
+            
+            # Perform convolution
+            strides = [1, stride, stride, 1]
+            output = tf.nn.conv2d(inputs, kernel, strides=strides, padding='SAME')
+            output = tf.nn.bias_add(output, bias)
+            
+            # Add regularization loss if specified
+            if weights_regularizer is not None and weights_regularizer > 0:
+                reg_loss = weights_regularizer * tf.nn.l2_loss(kernel)
+                tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
+            
+            # Apply activation
+            if activation_fn is not None:
+                output = activation_fn(output)
+            
+            return output
+    
     ly = _CompatLayers()
 
 # Add TF v1 API compatibility
@@ -54,6 +93,38 @@ if not hasattr(tf, 'variable_scope'):
     tf.variable_scope = tf.compat.v1.variable_scope
 if not hasattr(tf, 'get_variable_scope'):
     tf.get_variable_scope = tf.compat.v1.get_variable_scope
+if not hasattr(tf, 'get_variable'):
+    tf.get_variable = tf.compat.v1.get_variable
+if not hasattr(tf, 'GraphKeys'):
+    tf.GraphKeys = tf.compat.v1.GraphKeys
+
+# Additional TF2 compatibility shims
+if not hasattr(tf, 'reset_default_graph'):
+    tf.reset_default_graph = tf.compat.v1.reset_default_graph
+if not hasattr(tf, 'placeholder'):
+    tf.placeholder = tf.compat.v1.placeholder
+if not hasattr(tf, 'Session'):
+    tf.Session = tf.compat.v1.Session
+if not hasattr(tf, 'global_variables_initializer'):
+    tf.global_variables_initializer = tf.compat.v1.global_variables_initializer
+if not hasattr(tf, 'ConfigProto'):
+    tf.ConfigProto = tf.compat.v1.ConfigProto
+if not hasattr(tf.train, 'Saver'):
+    tf.train.Saver = tf.compat.v1.train.Saver
+if not hasattr(tf.train, 'AdamOptimizer'):
+    tf.train.AdamOptimizer = tf.compat.v1.train.AdamOptimizer
+if not hasattr(tf.train, 'MomentumOptimizer'):
+    tf.train.MomentumOptimizer = tf.compat.v1.train.MomentumOptimizer
+if not hasattr(tf.train, 'exponential_decay'):
+    tf.train.exponential_decay = tf.compat.v1.train.exponential_decay
+if not hasattr(tf.train, 'get_checkpoint_state'):
+    tf.train.get_checkpoint_state = tf.compat.v1.train.get_checkpoint_state
+if not hasattr(tf.train, 'latest_checkpoint'):
+    tf.train.latest_checkpoint = tf.compat.v1.train.latest_checkpoint
+if not hasattr(tf, 'add_to_collection'):
+    tf.add_to_collection = tf.compat.v1.add_to_collection
+if not hasattr(tf, 'get_collection'):
+    tf.get_collection = tf.compat.v1.get_collection
 import os
 import h5py
 import scipy.io as sio
@@ -99,13 +170,13 @@ def rgbNet(ms, RGB, num_spectral=31, num_res=6, num_fm=64, reuse=False):
         ## Channel Attention
         gap_ms_c = tf.reduce_mean(ms, [1, 2], name='global_pool', keepdims=True)
 
-        with tf.compat.v1.variable_scope('CA'):
+        with tf.variable_scope('CA'):
             CA = ly.conv2d(gap_ms_c, num_outputs=1, kernel_size=1, stride=1,
                            weights_regularizer=ly.l2_regularizer(weight_decay),
                            weights_initializer=ly.variance_scaling_initializer(), activation_fn=tf.nn.leaky_relu)
             CA = ly.conv2d(CA, num_outputs=num_spectral, kernel_size=1, stride=1,
                            weights_regularizer=ly.l2_regularizer(weight_decay),
-                           weights_initializer=tf.random_normal_initializer(), activation_fn=tf.nn.sigmoid)
+                           weights_initializer=tf.keras.initializers.RandomNormal(), activation_fn=tf.nn.sigmoid)
 
         ## Spatial Attention
         gap_RGB_s = tf.reduce_mean(RGB, [3], name='global_pool', keepdims=True)
