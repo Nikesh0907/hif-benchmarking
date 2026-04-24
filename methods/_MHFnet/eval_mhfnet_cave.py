@@ -91,6 +91,29 @@ def compute_sam(image1: np.ndarray, image2: np.ndarray) -> float:
     return float(np.mean(sam))
 
 
+def compute_psnr(gt: np.ndarray, pred: np.ndarray) -> float:
+    """DBIN-style PSNR: mean across bands."""
+    gt = np.asarray(gt)
+    pred = np.asarray(pred)
+    if gt.ndim == 4:
+        gt = gt[0]
+    if pred.ndim == 4:
+        pred = pred[0]
+
+    if gt.shape != pred.shape:
+        raise ValueError(f"PSNR shape mismatch: {gt.shape} vs {pred.shape}")
+
+    h, w, c = gt.shape
+    gt_vec = gt.reshape(-1, c)
+    pred_vec = pred.reshape(-1, c)
+    
+    mse_per_band = np.mean((gt_vec - pred_vec) ** 2, axis=0)
+    max_per_band = np.max(gt_vec, axis=0)
+    psnr_per_band = 10 * np.log10(max_per_band**2 / (mse_per_band + 1e-12))
+    
+    return float(np.mean(psnr_per_band))
+
+
 def compute_ergas_from_mse(mse_per_band: np.ndarray, out: np.ndarray, sf: int) -> float:
     """DBIN-style ERGAS taking per-band MSE and mean(out) per band."""
     out = np.asarray(out)
@@ -235,11 +258,12 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     items = build_items(args.gt_dir, args.pred_dir, split_list)
 
+    psnr_list: list[float] = []
     ssim_list: list[float] = []
     sam_list: list[float] = []
     ergas_list: list[float] = []
 
-    print("name,ssim,sam,ergas")
+    print("name,psnr,ssim,sam,ergas")
     for it in items:
         if not os.path.exists(it.pred_path):
             raise FileNotFoundError(
@@ -253,18 +277,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         if gt.shape != pred.shape:
             raise ValueError(f"Shape mismatch for {it.name}: gt={gt.shape}, pred={pred.shape}")
 
+        psnr_v = compute_psnr(gt, pred)
         ssim_v = compute_ms_ssim(pred, gt)
         sam_v = compute_sam(pred, gt)
         mse_v = mse_per_band(gt, pred)
         ergas_v = compute_ergas_from_mse(mse_v, pred, sf=args.sf)
 
+        psnr_list.append(psnr_v)
         ssim_list.append(ssim_v)
         sam_list.append(sam_v)
         ergas_list.append(ergas_v)
 
-        print(f"{it.name},{ssim_v:.6f},{sam_v:.6f},{ergas_v:.6f}")
+        print(f"{it.name},{psnr_v:.4f},{ssim_v:.6f},{sam_v:.6f},{ergas_v:.6f}")
 
-    print("avg,{:.6f},{:.6f},{:.6f}".format(np.mean(ssim_list), np.mean(sam_list), np.mean(ergas_list)))
+    print("avg,{:.4f},{:.6f},{:.6f},{:.6f}".format(np.mean(psnr_list), np.mean(ssim_list), np.mean(sam_list), np.mean(ergas_list)))
     return 0
 
 

@@ -215,6 +215,7 @@ def main():
     ap.add_argument('--hsi_dir', required=True, help='Kaggle HSI directory')
     ap.add_argument('--rgb_dir', required=True, help='Kaggle RGB directory')
     ap.add_argument('--cmhf_root', default='methods/_MHFnet/CMHF-net', help='CMHF-net root')
+    ap.add_argument('--scale_factor', type=int, default=32, help='Scale factor for ERGAS (default: 32)')
     ap.add_argument('--skip_prep', action='store_true', help='Skip data preparation')
     ap.add_argument('--skip_inference', action='store_true', help='Skip inference, only compute metrics')
     args = ap.parse_args()
@@ -249,7 +250,7 @@ def main():
         '--pred_dir', result_dir,
         '--gt_dir', os.path.join(cmhf_root, 'CAVEdata', 'X'),
         '--split_list', split_list_path,
-        '--sf', '32'
+        '--sf', str(args.scale_factor)
     ]
     
     try:
