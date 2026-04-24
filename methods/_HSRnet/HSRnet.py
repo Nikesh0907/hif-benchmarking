@@ -97,7 +97,7 @@ def rgbNet(ms, RGB, num_spectral=31, num_res=6, num_fm=64, reuse=False):
             tf.get_variable_scope().reuse_variables()
 
         ## Channel Attention
-        gap_ms_c = tf.reduce_mean(ms, [1, 2], name='global_pool', keep_dims=True)
+        gap_ms_c = tf.reduce_mean(ms, [1, 2], name='global_pool', keepdims=True)
 
         with tf.compat.v1.variable_scope('CA'):
             CA = ly.conv2d(gap_ms_c, num_outputs=1, kernel_size=1, stride=1,
@@ -108,7 +108,7 @@ def rgbNet(ms, RGB, num_spectral=31, num_res=6, num_fm=64, reuse=False):
                            weights_initializer=tf.random_normal_initializer(), activation_fn=tf.nn.sigmoid)
 
         ## Spatial Attention
-        gap_RGB_s = tf.reduce_mean(RGB, [3], name='global_pool', keep_dims=True)
+        gap_RGB_s = tf.reduce_mean(RGB, [3], name='global_pool', keepdims=True)
 
         SA = ly.conv2d(gap_RGB_s, num_outputs=1, kernel_size=6, stride=1,
                        weights_regularizer=ly.l2_regularizer(weight_decay),
