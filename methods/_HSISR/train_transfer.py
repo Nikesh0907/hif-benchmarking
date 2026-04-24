@@ -163,7 +163,7 @@ def train_epoch(model, loader, optimizer, device):
         optimizer.step()
         
         loss_meter += loss.item()
-        pbar.set_postfix({'loss': loss.item():.6f})
+        pbar.set_postfix({'loss': f'{loss.item():.6f}'})
     
     return loss_meter / len(loader)
 
