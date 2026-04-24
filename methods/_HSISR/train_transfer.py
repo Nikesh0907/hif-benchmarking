@@ -30,11 +30,10 @@ import tifffile
 from tqdm import tqdm
 
 # Add paths
-sys.path.insert(0, '/workspaces/hif-benchmarking/auxiliary/globals')
-sys.path.insert(0, '/workspaces/hif-benchmarking/methods/_HSISR')
+sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from DeepShare import DeepShare
-from BlockModule import BlockModule
+from BlockModule import DeepShare
 
 
 def normalize01(data):
@@ -192,7 +191,7 @@ def main():
     
     # Model
     print(f"\n🏗️  Loading pretrained model from: {args.pretrain_path}")
-    model = DeepShare(BlockModule, n_subs=8, n_ovls=2, n_feats=256, n_blocks=3)
+    model = DeepShare()
     
     checkpoint = torch.load(args.pretrain_path, map_location=device)
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
