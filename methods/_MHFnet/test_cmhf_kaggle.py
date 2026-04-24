@@ -32,13 +32,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from tools.hif_metrics import normalize01
 
 
-def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
+def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root, scale_factor=32):
     """Prepare CAVE data in CMHF-net format.
     
     Creates:
     - CAVEdata/X/<name>.mat with key 'msi' (H,W,31) [0,1]
     - CAVEdata/Y/<name>.mat with key 'RGB' (H,W,3) [0,1]
-    - CAVEdata/Z/<name>.mat with key 'Zmsi' (H/32,W/32,31) [0,1]
+    - CAVEdata/Z/<name>.mat with key 'Zmsi' (H/scale_factor,W/scale_factor,31) [0,1]
     - CAVEdata/List with key 'Ind' (1-based indices; first 20 train, last 12 test)
     """
     import cv2
@@ -133,8 +133,8 @@ def prepare_cmhf_data(hsi_dir, rgb_dir, cmhf_root):
         # Save Y (RGB)
         sio.savemat(os.path.join(y_dir, name), {'RGB': rgb.astype(np.float32)})
         
-        # Save Z (downsampled HSI, 1/32 scale)
-        h_z, w_z = hsi.shape[0] // 32, hsi.shape[1] // 32
+        # Save Z (downsampled HSI, 1/scale_factor scale)
+        h_z, w_z = hsi.shape[0] // scale_factor, hsi.shape[1] // scale_factor
         hsi_z = cv2.resize(hsi, (w_z, h_z), interpolation=cv2.INTER_AREA)
         sio.savemat(os.path.join(z_dir, name), {'Zmsi': hsi_z.astype(np.float32)})
     
@@ -228,8 +228,8 @@ def main():
     
     # Step 1: Prepare data
     if not args.skip_prep:
-        print("\n[1/3] Preparing CAVE data in CMHF-net format...")
-        prepare_cmhf_data(args.hsi_dir, args.rgb_dir, cmhf_root)
+        print("\n[1/3] Preparing CAVE data in CMHF-net format (scale_factor={})...".format(args.scale_factor))
+        prepare_cmhf_data(args.hsi_dir, args.rgb_dir, cmhf_root, scale_factor=args.scale_factor)
     
     # Step 2: Run inference
     result_dir = os.path.join(cmhf_root, 'TestResult', 'Result')
