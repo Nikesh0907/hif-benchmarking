@@ -202,6 +202,7 @@ def main():
     parser.add_argument('--gpus', type=int, default=1, help='Number of GPUs to use (data-parallel)')
     parser.add_argument('--save_every', type=int, default=10, help='Save checkpoint every N epochs')
     parser.add_argument('--resume', action='store_true', help='Resume from latest checkpoint')
+    parser.add_argument('--pretrain_path', type=str, default=None, help='Path to pretrained model for transfer learning')
     args = parser.parse_args()
     
     print("=" * 70)
@@ -236,6 +237,18 @@ def main():
     print("[2/3] Building model...")
     model = DeepShare(n_subs=8, n_ovls=2, n_colors=31, n_blocks=3, n_feats=256,
                       n_scale=args.sf, res_scale=0.1, use_share=True, conv=default_conv)
+    
+    # Load pretrained weights if provided (transfer learning)
+    if args.pretrain_path and os.path.exists(args.pretrain_path):
+        print(f"Loading pretrained weights from: {args.pretrain_path}")
+        ckpt = torch.load(args.pretrain_path, map_location='cpu')
+        if isinstance(ckpt, dict) and 'model_state_dict' in ckpt:
+            ckpt = ckpt['model_state_dict']
+        # Handle DataParallel format
+        ckpt = {k.replace('module.', ''): v for k, v in ckpt.items()}
+        model.load_state_dict(ckpt, strict=False)
+        print("✓ Pretrained weights loaded (transfer learning mode)\n")
+    
     model = model.to(device)
     
     # Multi-GPU data parallel (DBIN-inspired approach)
