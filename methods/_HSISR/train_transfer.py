@@ -75,15 +75,24 @@ class HSIPatchDataset(Dataset):
         self.stride = stride
         self.patches = []
         
-        hsi_files = sorted([f for f in os.listdir(hsi_dir) if f.endswith('.tif')])
+        # Check if directories exist
+        if not os.path.exists(hsi_dir):
+            raise FileNotFoundError(f"HSI directory not found: {hsi_dir}")
+        if not os.path.exists(rgb_dir):
+            raise FileNotFoundError(f"RGB directory not found: {rgb_dir}")
         
-        print(f"Loading {len(hsi_files)} HSI images...")
+        # Find all .tif files (case-insensitive)
+        hsi_files = sorted([f for f in os.listdir(hsi_dir) if f.lower().endswith('.tif')])
+        
+        print(f"  Found {len(hsi_files)} HSI files in {hsi_dir}")
+        print(f"  Files: {hsi_files[:5]}..." if len(hsi_files) > 5 else f"  Files: {hsi_files}")
         for hsi_file in hsi_files:
-            rgb_file = hsi_file.replace('.tif', '.tif')
+            rgb_file = hsi_file  # Same filename in rgb_dir
             hsi_path = os.path.join(hsi_dir, hsi_file)
             rgb_path = os.path.join(rgb_dir, rgb_file)
             
             if not os.path.exists(rgb_path):
+                print(f"  ⚠ Skipping {hsi_file}: RGB file not found")
                 continue
             
             hsi = load_hsi_image(hsi_path)
