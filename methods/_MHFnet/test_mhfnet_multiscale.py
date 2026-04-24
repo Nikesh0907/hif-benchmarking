@@ -11,7 +11,10 @@ import numpy as np
 import scipy.io as sio
 import cv2
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add repo root to path
+repo_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(repo_root))
+
 from tools.hif_metrics import compute_metrics
 
 def run_mhfnet_sf32(hsi_dir, rgb_dir, cmhf_root):
@@ -29,6 +32,7 @@ def run_mhfnet_sf32(hsi_dir, rgb_dir, cmhf_root):
     
     if result.returncode != 0:
         print("❌ MHFnet SF=32 inference failed")
+        print(result.stderr)
         return None
     
     return result.stdout
