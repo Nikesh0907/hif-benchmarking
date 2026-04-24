@@ -10,12 +10,17 @@ Output: predicted HR HSI (H, W, 31)
 import argparse
 import glob
 import os
+import sys
 from pathlib import Path
 from typing import Dict
 import numpy as np
 import scipy.io
 from PIL import Image
 import tensorflow as tf
+
+# Add repo root to path (works from anywhere)
+repo_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(repo_root))
 
 from methods._HSRnet.HSRnet import rgbNet
 from tools.hif_metrics import compute_metrics, normalize01
