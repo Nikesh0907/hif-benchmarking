@@ -155,6 +155,20 @@ def bicubic_upsample(img_lr, sf):
     return img_up
 
 
+def bicubic_downsample(img, sf):
+    """Bicubic downsample using PIL (matches training!)."""
+    h, w, c = img.shape
+    h_lr, w_lr = h // sf, w // sf
+    
+    img_lr = np.zeros((h_lr, w_lr, c), dtype=np.float32)
+    for i in range(c):
+        pil_img = Image.fromarray((img[:, :, i] * 255).astype(np.uint8))
+        pil_ds = pil_img.resize((w_lr, h_lr), Image.BICUBIC)
+        img_lr[:, :, i] = np.array(pil_ds, dtype=np.float32) / 255.0
+    
+    return img_lr
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -224,18 +238,14 @@ def main():
                 idx_r, idx_g, idx_b = 23, 15, 7
                 msi_full = np.stack([hsi_full[..., idx_r], hsi_full[..., idx_g], hsi_full[..., idx_b]], axis=-1)
             
-            # Degrade HSI
+            # Ensure divisible by SF
             h, w = hsi_full.shape[:2]
-            lr_h, lr_w = h // args.sf, w // args.sf
-            lr_hsi = np.zeros((lr_h, lr_w, 31), dtype=np.float32)
+            h_new = (h // args.sf) * args.sf
+            w_new = (w // args.sf) * args.sf
+            hsi_full = hsi_full[:h_new, :w_new, :]
             
-            # Simple box downsampling
-            for i in range(lr_h):
-                for j in range(lr_w):
-                    lr_hsi[i, j, :] = np.mean(
-                        hsi_full[i*args.sf:(i+1)*args.sf, j*args.sf:(j+1)*args.sf, :],
-                        axis=(0, 1)
-                    )
+            # Degrade HSI using BICUBIC (same as training!)
+            lr_hsi = bicubic_downsample(hsi_full, args.sf)
             
             # Bicubic upsample LR-HSI
             lms_full = bicubic_upsample(lr_hsi, args.sf)
@@ -252,9 +262,9 @@ def main():
             pred = model(lr_hsi_t, lms_t, modality="spectral")
             elapsed = time.time() - start
             
-            # Convert output to numpy HWC
+            # Convert output to numpy HWC (model output is [0,1])
             pred_np = pred[0].permute(1, 2, 0).cpu().numpy()
-            gt_np = hsi_full.copy()
+            gt_np = normalize01(hsi_full).astype(np.float32)  # Ensure same normalization!
             
             # Clip and compute metrics
             pred_np = np.clip(pred_np, 0.0, 1.0)
