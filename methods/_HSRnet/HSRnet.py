@@ -19,6 +19,10 @@ except Exception:  # TF2.x / Keras 3 (no contrib)
         _conv_counter = 0
         
         @staticmethod
+        def reset_counter():
+            _CompatLayers._conv_counter = 0
+        
+        @staticmethod
         def l2_regularizer(scale):
             return scale  # Return scale, will be handled in get_reg_loss
         
@@ -37,13 +41,13 @@ except Exception:  # TF2.x / Keras 3 (no contrib)
             weights_initializer=None,
             **_kwargs,
         ):
-            """Conv2d using tf.nn.conv2d (Keras 3 compatible)."""
+            """Conv2d using tf.nn.conv2d (Keras 3 compatible) with tf.contrib naming."""
             if isinstance(kernel_size, int):
                 kernel_size = [kernel_size, kernel_size]
             
-            # Create variable name
+            # Use auto-incrementing Conv names like tf.contrib.layers did
             _CompatLayers._conv_counter += 1
-            conv_name = f"conv2d_{_CompatLayers._conv_counter}"
+            conv_scope = f"Conv_{_CompatLayers._conv_counter}"
             
             # Get input shape
             input_shape = inputs.get_shape().as_list()
@@ -53,38 +57,37 @@ except Exception:  # TF2.x / Keras 3 (no contrib)
             if weights_initializer is None:
                 weights_initializer = tf.keras.initializers.VarianceScaling()
             
-            # Create kernel variable
-            kernel_shape = [kernel_size[0], kernel_size[1], in_channels, num_outputs]
-            kernel = tf.compat.v1.get_variable(
-                f"{conv_name}_kernel",
-                shape=kernel_shape,
-                initializer=weights_initializer,
-                dtype=tf.float32
-            )
-            
-            # Create bias variable  
-            bias = tf.compat.v1.get_variable(
-                f"{conv_name}_bias",
-                shape=[num_outputs],
-                initializer=tf.zeros_initializer(),
-                dtype=tf.float32
-            )
-            
-            # Perform convolution
-            strides = [1, stride, stride, 1]
-            output = tf.nn.conv2d(inputs, kernel, strides=strides, padding='SAME')
-            output = tf.nn.bias_add(output, bias)
-            
-            # Add regularization loss if specified
-            if weights_regularizer is not None and weights_regularizer > 0:
-                reg_loss = weights_regularizer * tf.nn.l2_loss(kernel)
-                tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
-            
-            # Apply activation
-            if activation_fn is not None:
-                output = activation_fn(output)
-            
-            return output
+            with tf.compat.v1.variable_scope(conv_scope):
+                # Create kernel and bias with contrib-compatible names
+                kernel = tf.compat.v1.get_variable(
+                    "weights",
+                    shape=[kernel_size[0], kernel_size[1], in_channels, num_outputs],
+                    initializer=weights_initializer,
+                    dtype=tf.float32
+                )
+                
+                bias = tf.compat.v1.get_variable(
+                    "biases",
+                    shape=[num_outputs],
+                    initializer=tf.zeros_initializer(),
+                    dtype=tf.float32
+                )
+                
+                # Perform convolution
+                strides = [1, stride, stride, 1]
+                output = tf.nn.conv2d(inputs, kernel, strides=strides, padding='SAME')
+                output = tf.nn.bias_add(output, bias)
+                
+                # Add regularization loss if specified
+                if weights_regularizer is not None and weights_regularizer > 0:
+                    reg_loss = weights_regularizer * tf.nn.l2_loss(kernel)
+                    tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, reg_loss)
+                
+                # Apply activation
+                if activation_fn is not None:
+                    output = activation_fn(output)
+                
+                return output
     
     ly = _CompatLayers()
 
@@ -160,8 +163,24 @@ def vis_ms(data):
 
 
 # rgbNet structures
-def rgbNet(ms, RGB, num_spectral=31, num_res=6, num_fm=64, reuse=False):
+def rgbNet(ms, RGB, num_spectral=31, num_res=5, num_fm=64, reuse=False):
     weight_decay = 1e-4
+    
+    # Reset counter for fresh layer naming (critical for checkpoint loading)
+    ly._conv_counter = 0
+    
+    # Compute scale factor from static input shapes
+    # ms is [batch, H/sf, W/sf, channels]
+    # RGB is [batch, H, W, 3]
+    ms_shape = ms.get_shape().as_list()
+    rgb_shape = RGB.get_shape().as_list()
+    
+    # Calculate scale factor - be careful with None (dynamic) dimensions
+    if ms_shape[1] is not None and rgb_shape[1] is not None:
+        sf = rgb_shape[1] // ms_shape[1]
+    else:
+        # Fallback: assume sf=4 if shapes are dynamic
+        sf = 4
 
     with tf.variable_scope('net'):
         if reuse:
@@ -185,21 +204,21 @@ def rgbNet(ms, RGB, num_spectral=31, num_res=6, num_fm=64, reuse=False):
                        weights_regularizer=ly.l2_regularizer(weight_decay),
                        weights_initializer=ly.variance_scaling_initializer(), activation_fn=tf.nn.sigmoid)
 
-        sa = ly.conv2d(SA, 1, 6, 4, activation_fn=tf.nn.sigmoid,
+        sa = ly.conv2d(SA, 1, 6, sf, activation_fn=tf.nn.sigmoid,
                        weights_initializer=ly.variance_scaling_initializer(),
                        weights_regularizer=ly.l2_regularizer(weight_decay))
-        ## downsampled RGB
-        rgb = ly.conv2d(RGB, 3, 6, 4, activation_fn=None,
+        ## downsampled RGB (downsample by sf to match ms dimensions)
+        rgb = ly.conv2d(RGB, 3, 6, sf, activation_fn=None,
                         weights_initializer=ly.variance_scaling_initializer(),
                         weights_regularizer=ly.l2_regularizer(weight_decay))
         rslice, gslice, bslice = tf.split(rgb, 3, axis=3)
         msp1, msp2 = tf.split(ms, [15, 16], axis=3)
         ms = tf.concat([rslice, msp1, gslice, msp2, bslice], axis=3)
 
-        rs = ly.conv2d(ms, num_outputs=num_spectral * 4 * 4, kernel_size=3, stride=1,
+        rs = ly.conv2d(ms, num_outputs=num_spectral * sf * sf, kernel_size=3, stride=1,
                        weights_regularizer=ly.l2_regularizer(weight_decay),
                        weights_initializer=ly.variance_scaling_initializer(), activation_fn=tf.nn.leaky_relu)
-        rs = PS(rs, 4)
+        rs = PS(rs, sf)
 
         Rslice, Gslice, Bslice = tf.split(RGB, 3, axis=3)
         Msp1, Msp2 = tf.split(rs, [15, 16], axis=3)
