@@ -7,7 +7,11 @@
 
 import tensorflow as tf
 import numpy as np
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # Optional
+
 try:
     import tensorflow.contrib.layers as ly  # TF1.x
 except Exception:  # TF2.x (no contrib)
@@ -44,6 +48,12 @@ except Exception:  # TF2.x (no contrib)
             )
 
     ly = _CompatLayers()
+
+# Add TF v1 API compatibility
+if not hasattr(tf, 'variable_scope'):
+    tf.variable_scope = tf.compat.v1.variable_scope
+if not hasattr(tf, 'get_variable_scope'):
+    tf.get_variable_scope = tf.compat.v1.get_variable_scope
 import os
 import h5py
 import scipy.io as sio
