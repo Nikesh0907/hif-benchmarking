@@ -139,11 +139,18 @@ def main():
                    choices=[8, 16, 32],
                    help='Scale factor to test (default: 32)')
     ap.add_argument('--cmhf_root', 
-                   default='methods/_MHFnet/CMHF-net',
-                   help='CMHF-net root')
+                   default=None,
+                   help='CMHF-net root (auto-detected if not provided)')
     args = ap.parse_args()
     
-    cmhf_root = Path(args.cmhf_root).resolve()
+    # Auto-detect cmhf_root from script location if not provided
+    if args.cmhf_root:
+        cmhf_root = Path(args.cmhf_root).resolve()
+    else:
+        # Script is in: repo_root/methods/_MHFnet/test_mhfnet_multiscale.py
+        # CMHF-net is at: repo_root/methods/_MHFnet/CMHF-net
+        script_dir = Path(__file__).parent
+        cmhf_root = script_dir / "CMHF-net"
     
     print("="*70)
     print(f"MHFnet Test (SF={args.scale_factor})")
