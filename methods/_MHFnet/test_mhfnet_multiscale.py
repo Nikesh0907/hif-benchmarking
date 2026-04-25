@@ -100,17 +100,20 @@ def compute_sf_metrics(hsi_dir, sf):
         if pred_sr.ndim == 4:
             pred_sr = pred_sr[0]
         
-        # Downsample GT for comparison at this scale
+        # Downsample BOTH GT and prediction for comparison at this scale
+        # This ensures shape compatibility before metrics computation
         if down_factor > 1:
             h, w, c = gt.shape
             h_down = h // down_factor
             w_down = w // down_factor
             gt_eval = cv2.resize(gt, (w_down, h_down), interpolation=cv2.INTER_AREA)
+            pred_eval = cv2.resize(pred_sr, (w_down, h_down), interpolation=cv2.INTER_AREA)
         else:
             gt_eval = gt
+            pred_eval = pred_sr
         
-        # Compute metrics (use downsampled GT if applicable)
-        metrics = compute_metrics(gt_eval, pred_sr, ratio=sf)
+        # Compute metrics (use downsampled GT and prediction if applicable)
+        metrics = compute_metrics(gt_eval, pred_eval, ratio=sf)
         
         psnr_list.append(metrics['psnr'])
         ssim_list.append(metrics['ssim'])
