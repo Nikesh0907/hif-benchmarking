@@ -2,6 +2,7 @@
 """
 Generate SF=8 and SF=16 MHFnet results from SF=32 checkpoint.
 Uses the SF=32 model output and computes metrics for intermediate scales.
+Metric computation matches DBIN approach (MSE->PSNR per channel).
 """
 import os
 import sys
@@ -11,11 +12,114 @@ import numpy as np
 import scipy.io as sio
 import cv2
 
-# Add repo root to path
-repo_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(repo_root))
+try:
+    from skimage.measure import compare_ssim
+except Exception:
+    from skimage.metrics import structural_similarity as compare_ssim
 
-from tools.hif_metrics import compute_metrics
+
+def _normalize01(x):
+    """Normalize image to [0,1] range - handle various input formats."""
+    x = np.asarray(x, dtype=np.float32)
+    mx = float(np.nanmax(x)) if x.size else 0.0
+    if mx <= 1.0:
+        return np.clip(x, 0.0, 1.0)
+    # Handle common ranges
+    if mx <= 255.0:
+        denom = 255.0
+    elif mx <= 4095.0:
+        denom = 4095.0
+    elif mx <= 65535.0:
+        denom = 65535.0
+    else:
+        denom = mx
+    x = x / denom
+    return np.clip(x, 0.0, 1.0)
+
+
+def compute_psnr(gt, pred):
+    """Compute PSNR per channel, return mean across channels."""
+    gt = np.asarray(gt, dtype=np.float32)
+    pred = np.asarray(pred, dtype=np.float32)
+    if gt.ndim == 4:
+        gt = gt[0]
+    if pred.ndim == 4:
+        pred = pred[0]
+    
+    # Compute per-channel MSE
+    mse = np.square(gt - pred)
+    mse_per_channel = np.mean(mse, axis=[0, 1])  # Average over spatial dims
+    
+    # Convert to PSNR (matching DBIN: 10 * log10(1/mse))
+    psnr_per_channel = 10.0 * np.log10(1.0 / (mse_per_channel + 1e-12))
+    return float(np.mean(psnr_per_channel))
+
+
+def compute_ssim(gt, pred):
+    """Compute SSIM band-wise, return mean."""
+    gt = np.asarray(gt, dtype=np.float32)
+    pred = np.asarray(pred, dtype=np.float32)
+    if gt.ndim == 4:
+        gt = gt[0]
+    if pred.ndim == 4:
+        pred = pred[0]
+    
+    n_bands = gt.shape[2]
+    ssim_list = []
+    for i in range(n_bands):
+        # Use data_range=1.0 for float images in [0,1]
+        s = compare_ssim(gt[:, :, i], pred[:, :, i], data_range=1.0)
+        ssim_list.append(s)
+    return float(np.mean(ssim_list))
+
+
+def compute_sam(gt, pred):
+    """Compute Spectral Angle Mapper."""
+    gt = np.asarray(gt, dtype=np.float32)
+    pred = np.asarray(pred, dtype=np.float32)
+    if gt.ndim == 4:
+        gt = gt[0]
+    if pred.ndim == 4:
+        pred = pred[0]
+    
+    h, w, c = gt.shape
+    gt_vec = np.reshape(gt, (h * w, c))
+    pred_vec = np.reshape(pred, (h * w, c))
+    
+    # SAM formula: arccos(dot / (norm1 * norm2))
+    dot = np.sum(gt_vec * pred_vec, axis=1)
+    norm_gt = np.sqrt(np.sum(np.square(gt_vec), axis=1))
+    norm_pred = np.sqrt(np.sum(np.square(pred_vec), axis=1))
+    
+    denom = norm_gt * norm_pred + 1e-12
+    cos_angle = np.clip(dot / denom, -1.0, 1.0)
+    angles = np.arccos(cos_angle)
+    
+    return float(np.mean(np.rad2deg(angles)))
+
+
+def compute_ergas(gt, pred, sf=8):
+    """Compute ERGAS metric."""
+    gt = np.asarray(gt, dtype=np.float32)
+    pred = np.asarray(pred, dtype=np.float32)
+    if gt.ndim == 4:
+        gt = gt[0]
+    if pred.ndim == 4:
+        pred = pred[0]
+    
+    h, w, c = gt.shape
+    gt_vec = np.reshape(gt, (h * w, c))
+    pred_vec = np.reshape(pred, (h * w, c))
+    
+    # MSE per channel
+    mse_per_channel = np.mean(np.square(gt_vec - pred_vec), axis=0)
+    # Mean value per channel
+    mean_per_channel = np.mean(gt_vec, axis=0)
+    
+    # ERGAS = 100 * (1/sf) * sqrt(mean(mse / mean^2))
+    ergas = 100.0 / float(sf) * np.sqrt(np.mean(mse_per_channel / (np.square(mean_per_channel) + 1e-12)))
+    return float(ergas)
+
 
 def run_mhfnet_sf32(hsi_dir, rgb_dir, cmhf_root):
     """Run MHFnet at SF=32 and get results."""
@@ -75,6 +179,9 @@ def compute_sf_metrics(hsi_dir, sf):
         if gt.ndim == 4:
             gt = gt[0]
         
+        # Normalize GT to [0,1]
+        gt = _normalize01(gt)
+        
         if sf == 32:
             # Use actual MHFnet model output for SF=32
             pred_file = result_dir / f"{gt_file.name}"
@@ -102,13 +209,19 @@ def compute_sf_metrics(hsi_dir, sf):
             gt_lr = cv2.resize(gt, (w_lr, h_lr), interpolation=cv2.INTER_CUBIC)
             pred_sr = cv2.resize(gt_lr, (w, h), interpolation=cv2.INTER_CUBIC)
         
-        # Compare at full resolution
-        metrics = compute_metrics(gt, pred_sr, ratio=32)
+        # Normalize prediction to [0,1]
+        pred_sr = _normalize01(pred_sr)
         
-        psnr_list.append(metrics['psnr'])
-        ssim_list.append(metrics['ssim'])
-        sam_list.append(metrics['sam'])
-        ergas_list.append(metrics['ergas'])
+        # Compute metrics using DBIN-style computation
+        psnr = compute_psnr(gt, pred_sr)
+        ssim = compute_ssim(gt, pred_sr)
+        sam = compute_sam(gt, pred_sr)
+        ergas = compute_ergas(gt, pred_sr, sf=sf)
+        
+        psnr_list.append(psnr)
+        ssim_list.append(ssim)
+        sam_list.append(sam)
+        ergas_list.append(ergas)
     
     if not psnr_list:
         return None
