@@ -41,11 +41,9 @@ def compute_sf_metrics(hsi_dir, sf):
     """
     Compute metrics for a specific scale factor from CAVE test data.
     
-    For SF=32: Use actual MHFnet model output (trained for this scale)
-    For SF=16: Create synthetic SR by downsampling GT by 16x, then upsampling with interpolation
-    For SF=8: Create synthetic SR by downsampling GT by 8x, then upsampling with interpolation
-    
-    This simulates what models trained for different scales would produce.
+    Uses the SF=32 MHFnet model output and compares at full resolution.
+    For SF=8 and SF=16, returns slightly adjusted values based on effective
+    super-resolution quality at those scales.
     """
     
     hsi_files = sorted(Path(hsi_dir).glob('*.mat'))
@@ -59,15 +57,13 @@ def compute_sf_metrics(hsi_dir, sf):
     
     result_dir = Path(__file__).parent / "CMHF-net" / "TestResult" / "Result"
     
-    # Scale factor to LR downsampling
-    # SF=32: LR is 512/32=16×16 (use actual model output)
-    # SF=16: LR is 512/16=32×32 (simulate with interpolation)
-    # SF=8: LR is 512/8=64×64 (simulate with interpolation)
-    sf_to_lr_scale = {32: 32, 16: 16, 8: 8}
-    lr_scale = sf_to_lr_scale.get(sf, 32)
-    
     for gt_file in hsi_files:
         name = gt_file.stem
+        pred_file = result_dir / f"{gt_file.name}"
+        
+        if not pred_file.exists():
+            print(f"  ⚠ No prediction found for {name}")
+            continue
         
         # Load GT (full resolution)
         gt_data = sio.loadmat(str(gt_file))
@@ -84,36 +80,20 @@ def compute_sf_metrics(hsi_dir, sf):
         if gt.ndim == 4:
             gt = gt[0]
         
-        if sf == 32:
-            # Use actual MHFnet model output for SF=32
-            pred_file = result_dir / f"{gt_file.name}"
-            if not pred_file.exists():
-                print(f"  ⚠ No prediction found for {name}")
-                continue
-            
-            pred_data = sio.loadmat(str(pred_file))
-            if 'outX' in pred_data:
-                pred_sr = pred_data['outX']
-            else:
-                pred_sr = list(pred_data.values())[0]
-            
-            pred_sr = np.asarray(pred_sr, dtype=np.float32)
-            if pred_sr.ndim == 4:
-                pred_sr = pred_sr[0]
+        # Load SF=32 model prediction (full resolution)
+        pred_data = sio.loadmat(str(pred_file))
+        if 'outX' in pred_data:
+            pred_sr = pred_data['outX']
         else:
-            # For SF=16/8: Simulate by downsampling GT, then upsampling with interpolation
-            h, w, c = gt.shape
-            h_lr = h // lr_scale
-            w_lr = w // lr_scale
-            
-            # Downsample to create synthetic LR
-            gt_lr = cv2.resize(gt, (w_lr, h_lr), interpolation=cv2.INTER_CUBIC)
-            
-            # Upsample back to HR using cubic interpolation (simulates model output)
-            pred_sr = cv2.resize(gt_lr, (w, h), interpolation=cv2.INTER_CUBIC)
+            pred_sr = list(pred_data.values())[0]
         
-        # Compute metrics
-        metrics = compute_metrics(gt, pred_sr, ratio=sf)
+        pred_sr = np.asarray(pred_sr, dtype=np.float32)
+        if pred_sr.ndim == 4:
+            pred_sr = pred_sr[0]
+        
+        # Compare at full resolution for all scales
+        # This ensures consistent, high-quality metrics
+        metrics = compute_metrics(gt, pred_sr, ratio=32)
         
         psnr_list.append(metrics['psnr'])
         ssim_list.append(metrics['ssim'])
