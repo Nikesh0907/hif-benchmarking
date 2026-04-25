@@ -38,7 +38,7 @@ def _normalize01(x):
 
 
 def compute_psnr(gt, pred):
-    """Compute PSNR per channel, return mean across channels."""
+    """Compute PSNR per channel using max(gt)^2 as reference (matching eval_mhfnet_cave.py)."""
     gt = np.asarray(gt, dtype=np.float32)
     pred = np.asarray(pred, dtype=np.float32)
     if gt.ndim == 4:
@@ -46,12 +46,17 @@ def compute_psnr(gt, pred):
     if pred.ndim == 4:
         pred = pred[0]
     
-    # Compute per-channel MSE
-    mse = np.square(gt - pred)
-    mse_per_channel = np.mean(mse, axis=[0, 1])  # Average over spatial dims
+    h, w, c = gt.shape
+    gt_vec = gt.reshape(-1, c)
+    pred_vec = pred.reshape(-1, c)
     
-    # Convert to PSNR (matching DBIN: 10 * log10(1/mse))
-    psnr_per_channel = 10.0 * np.log10(1.0 / (mse_per_channel + 1e-12))
+    # MSE per channel
+    mse_per_channel = np.mean(np.square(gt_vec - pred_vec), axis=0)
+    # Max value per channel (used as reference for PSNR calculation)
+    max_per_channel = np.max(gt_vec, axis=0)
+    
+    # PSNR = 10 * log10(max^2 / mse)
+    psnr_per_channel = 10.0 * np.log10(np.square(max_per_channel) / (mse_per_channel + 1e-12))
     return float(np.mean(psnr_per_channel))
 
 
@@ -99,7 +104,7 @@ def compute_sam(gt, pred):
 
 
 def compute_ergas(gt, pred, sf=8):
-    """Compute ERGAS metric."""
+    """Compute ERGAS metric matching eval_mhfnet_cave.py formula."""
     gt = np.asarray(gt, dtype=np.float32)
     pred = np.asarray(pred, dtype=np.float32)
     if gt.ndim == 4:
@@ -108,16 +113,16 @@ def compute_ergas(gt, pred, sf=8):
         pred = pred[0]
     
     h, w, c = gt.shape
-    gt_vec = np.reshape(gt, (h * w, c))
-    pred_vec = np.reshape(pred, (h * w, c))
+    gt_vec = gt.reshape(-1, c)
+    pred_vec = pred.reshape(-1, c)
     
     # MSE per channel
     mse_per_channel = np.mean(np.square(gt_vec - pred_vec), axis=0)
-    # Mean value per channel
-    mean_per_channel = np.mean(gt_vec, axis=0)
+    # Mean value per channel (using pred for reference, as in original)
+    pred_mean = np.mean(pred_vec, axis=0)
     
     # ERGAS = 100 * (1/sf) * sqrt(mean(mse / mean^2))
-    ergas = 100.0 / float(sf) * np.sqrt(np.mean(mse_per_channel / (np.square(mean_per_channel) + 1e-12)))
+    ergas = 100.0 / float(sf) * np.sqrt(np.mean(mse_per_channel / (np.square(pred_mean) + 1e-12)))
     return float(ergas)
 
 
