@@ -397,6 +397,10 @@ def _resolve_checkpoint(model_dir):
     """
     import re
 
+    # Allow callers to pass a checkpoint prefix directly.
+    if os.path.isfile(model_dir + '.index'):
+        return model_dir
+
     # 1) Try TensorFlow's standard mechanism
     ckpt = tf.compat.v1.train.latest_checkpoint(model_dir)
     if ckpt:
@@ -425,6 +429,38 @@ def _resolve_checkpoint(model_dir):
     raise RuntimeError(
         'No valid checkpoint found in {}. Ensure .index and .data-00000-of-00001 files are present.'.format(model_dir)
     )
+
+
+def _restore_checkpoint(sess, ckpt):
+    """Restore the checkpoint using only variables that actually exist in it.
+
+    Some DBIN checkpoints omit a subset of the SE dense biases. Building a saver
+    over the full graph would fail in that case, so we restore the intersection
+    of checkpoint variables and graph global variables instead.
+    """
+    reader = tf.compat.v1.train.NewCheckpointReader(ckpt)
+    ckpt_vars = set(reader.get_variable_to_shape_map().keys())
+    graph_vars = tf.compat.v1.global_variables()
+    restore_map = {}
+    skipped = []
+
+    for v in graph_vars:
+        name = v.name.split(':')[0]
+        if name in ckpt_vars:
+            restore_map[name] = v
+        else:
+            skipped.append(name)
+
+    if not restore_map:
+        raise RuntimeError('No overlapping variables between graph and checkpoint {}.'.format(ckpt))
+
+    print('Will restore {} vars from checkpoint; skipping {} (not present).'.format(len(restore_map), len(skipped)))
+    if skipped:
+        print('Skipped examples:', skipped[:10])
+
+    saver = tf.compat.v1.train.Saver(var_list=restore_map)
+    saver.restore(sess, ckpt)
+    print('Loaded checkpoint:', ckpt)
 
 
 def compute_ms_ssim(image1, image2):
@@ -836,7 +872,6 @@ def main():
         tf.compat.v1.global_variables_initializer(),
         tf.compat.v1.local_variables_initializer(),
     )
-    saver = tf.compat.v1.train.Saver()
 
     average_psnr = 0.0
     average_ssim = 0.0
@@ -861,31 +896,7 @@ def main():
             except Exception as e:
                 raise RuntimeError('No checkpoint could be resolved in {}: {}'.format(args.model_dir, e))
 
-        try:
-            saver.restore(sess, ckpt)
-            print('Loaded checkpoint:', ckpt)
-        except Exception as e:
-            print('Standard restore failed; attempting exact-name restore:', str(e))
-            reader = tf.compat.v1.train.NewCheckpointReader(ckpt)
-            ckpt_vars = set(reader.get_variable_to_shape_map().keys())
-            graph_vars = tf.compat.v1.trainable_variables()
-            exact_map = {}
-            skipped = []
-            for v in graph_vars:
-                name = v.name.split(':')[0]
-                if name in ckpt_vars:
-                    exact_map[name] = v
-                else:
-                    skipped.append(name)
-            print('Will restore {} vars from checkpoint; skipping {} (not present).'.format(len(exact_map), len(skipped)))
-            if skipped:
-                print('Skipped examples:', skipped[:10])
-            if exact_map:
-                saver_exact = tf.compat.v1.train.Saver(var_list=exact_map)
-                saver_exact.restore(sess, ckpt)
-                print('Loaded checkpoint with exact-name restore:', ckpt)
-            else:
-                raise RuntimeError('No overlapping variables between graph and checkpoint {}.'.format(ckpt))
+        _restore_checkpoint(sess, ckpt)
 
         for i in range(args.num_images):
             pan, pan2, pan4, gt, ms, ms2 = sess.run([pan_batch, pan2_batch, pan4_batch, gt_batch, ms_batch, ms2_batch])
