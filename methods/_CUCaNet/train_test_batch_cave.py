@@ -385,6 +385,9 @@ def main():
     ap.add_argument("--save_every", type=int, default=20, help="Save checkpoint every N epochs")
     ap.add_argument("--which_epoch", type=str, default="best", help="Checkpoint tag to load for eval: best or epoch_XX")
     ap.add_argument("--exp_name", type=str, default="CAVE_20train", help="Experiment folder name under checkpoints")
+    ap.add_argument("--weights_path", type=str, default=None,
+                    help="Optional eval override: path to checkpoint experiment folder containing *_net_*.pth files, "
+                         "or a specific .pth file. Keeps old behavior when omitted.")
     ap.add_argument("--resume_from", type=str, default=None, help="Resume training from checkpoint tag, folder, or .pth path")
     ap.add_argument("--max_train", type=int, default=999, help="Max number of training files to use")
     ap.add_argument("--max_test", type=int, default=999, help="Max number of test files to use")
@@ -472,7 +475,24 @@ def main():
 
     if args.mode in ("eval", "train_eval"):
         eval_opt = copy.deepcopy(train_opt)
-        eval_multi_scene(eval_opt, which_epoch=args.which_epoch, cave_dir="./CAVE")
+        which_epoch = args.which_epoch
+
+        # Optional eval-time override for checkpoint location/tag.
+        # Supports: folder path (experiment dir) OR specific .pth file path.
+        if args.weights_path:
+            ckpt_dir, exp_name, inferred_epoch, _ = _resolve_resume(
+                args.weights_path,
+                default_checkpoints_dir=eval_opt.checkpoints_dir,
+                default_exp_name=eval_opt.name,
+            )
+            eval_opt.checkpoints_dir = ckpt_dir
+            eval_opt.name = exp_name
+            if inferred_epoch is not None:
+                which_epoch = inferred_epoch
+            print(f"Using evaluation checkpoints from: {os.path.join(eval_opt.checkpoints_dir, eval_opt.name)}")
+            print(f"Evaluation tag: {which_epoch}")
+
+        eval_multi_scene(eval_opt, which_epoch=which_epoch, cave_dir="./CAVE")
     
     print(f"\n{'='*80}")
     print("Done")
