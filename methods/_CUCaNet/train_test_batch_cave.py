@@ -146,6 +146,38 @@ def stage_split(train_mats, test_mats, cave_dir="./CAVE"):
         _copy_and_fix_mats(test_mats, cave_test_dir)
 
 
+def ensure_srf_xls(cave_dir, srf_name, srf_xls_path=None):
+    """Ensure <cave_dir>/<srf_name>.xls exists for CUCaNet dataloader.
+
+    Priority:
+    1) existing file in cave_dir
+    2) user-provided --srf_xls_path
+    3) repo default methods/_CUCaNet/CAVE/<srf_name>.xls
+    """
+    cave_dir = os.path.abspath(cave_dir)
+    os.makedirs(cave_dir, exist_ok=True)
+    dst = os.path.join(cave_dir, f"{srf_name}.xls")
+    if os.path.exists(dst):
+        return dst
+
+    candidates = []
+    if srf_xls_path:
+        candidates.append(os.path.abspath(srf_xls_path))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "CAVE", f"{srf_name}.xls"))
+
+    for src in candidates:
+        if src and os.path.exists(src):
+            shutil.copy(src, dst)
+            print(f"Copied SRF xls: {src} -> {dst}")
+            return dst
+
+    raise SystemExit(
+        f"Could not find SRF xls for '{srf_name}'. "
+        f"Expected one of: {candidates}. "
+        f"Pass --srf_xls_path explicitly."
+    )
+
+
 def _resolve_resume(resume_from, default_checkpoints_dir, default_exp_name):
     """Resolve resume source.
 
@@ -376,6 +408,10 @@ def main():
     ap.add_argument("--test_dir", default=None, help="Directory with test HSI .mat files (optional; eval can use already-staged ./CAVE/test)")
     ap.add_argument("--gpu_ids", type=str, default=None, help="GPU ids, e.g. '0' or '0,1'. Use '-1' for CPU")
     ap.add_argument("--srf_name", default="Nikon_D700_Qu", help="Spectral response function name")
+    ap.add_argument("--srf_xls_path", default=None,
+                    help="Optional path to SRF .xls file. If omitted, script tries methods/_CUCaNet/CAVE/<srf_name>.xls")
+    ap.add_argument("--cave_dir", default="./CAVE",
+                    help="Staging/data root used by CUCaNet dataloader (must contain train/test and <srf_name>.xls)")
     ap.add_argument("--scale_factor", type=int, default=32, help="Scale factor")
     ap.add_argument("--epochs", type=int, default=None, help="Total training epochs (sets niter=epochs, niter_decay=0)")
     ap.add_argument("--niter", type=int, default=2000, help="Number of training epochs at starting learning rate")
@@ -421,7 +457,8 @@ def main():
     _sys.argv = old_argv
     
     # Override with user args
-    train_opt.data_name = "CAVE"
+    cave_root = os.path.abspath(args.cave_dir)
+    train_opt.data_name = cave_root
     train_opt.srf_name = args.srf_name
     train_opt.scale_factor = args.scale_factor
     if args.epochs is not None:
@@ -456,22 +493,25 @@ def main():
     # Stage mats only when sources are provided; eval-only can reuse existing staging.
     if train_mats is not None or test_mats is not None:
         print(f"\n{'='*80}")
-        print("Staging mats under ./CAVE/{train,test}")
+        print(f"Staging mats under {cave_root}/{{train,test}}")
         print(f"{'='*80}")
-        stage_split(train_mats, test_mats, cave_dir="./CAVE")
+        stage_split(train_mats, test_mats, cave_dir=cave_root)
+
+    # Ensure SRF xls exists where dataloader expects it.
+    ensure_srf_xls(cave_root, args.srf_name, args.srf_xls_path)
 
     # Ensure staged data exists for the selected mode
     if args.mode in ("train", "train_eval"):
-        staged_train = sorted(glob.glob(os.path.join("./CAVE", "train", "*.mat")))
+        staged_train = sorted(glob.glob(os.path.join(cave_root, "train", "*.mat")))
         if not staged_train:
-            raise SystemExit("No staged training mats found under ./CAVE/train/*.mat")
+            raise SystemExit(f"No staged training mats found under {cave_root}/train/*.mat")
     if args.mode in ("eval", "train_eval"):
-        staged_test = sorted(glob.glob(os.path.join("./CAVE", "test", "*.mat")))
+        staged_test = sorted(glob.glob(os.path.join(cave_root, "test", "*.mat")))
         if not staged_test:
-            raise SystemExit("No staged test mats found under ./CAVE/test/*.mat")
+            raise SystemExit(f"No staged test mats found under {cave_root}/test/*.mat")
 
     if args.mode in ("train", "train_eval"):
-        train_multi_scene(train_opt, cave_dir="./CAVE", resume_from=args.resume_from)
+        train_multi_scene(train_opt, cave_dir=cave_root, resume_from=args.resume_from)
 
     if args.mode in ("eval", "train_eval"):
         eval_opt = copy.deepcopy(train_opt)
@@ -492,7 +532,7 @@ def main():
             print(f"Using evaluation checkpoints from: {os.path.join(eval_opt.checkpoints_dir, eval_opt.name)}")
             print(f"Evaluation tag: {which_epoch}")
 
-        eval_multi_scene(eval_opt, which_epoch=which_epoch, cave_dir="./CAVE")
+        eval_multi_scene(eval_opt, which_epoch=which_epoch, cave_dir=cave_root)
     
     print(f"\n{'='*80}")
     print("Done")
